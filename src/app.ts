@@ -2,6 +2,10 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { config } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
+import { authRoutes } from "./routes/auth.js";
+import { meRoutes } from "./routes/me.js";
+import { adminAuthRoutes } from "./routes/admin/auth.js";
+import { adminOtpRoutes } from "./routes/admin/otps.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -16,6 +20,10 @@ export async function buildApp() {
   });
 
   await app.register(healthRoutes);
+  await app.register(authRoutes);
+  await app.register(meRoutes);
+  await app.register(adminAuthRoutes);
+  await app.register(adminOtpRoutes);
 
   return app;
 }

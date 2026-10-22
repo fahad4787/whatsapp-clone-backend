@@ -17,8 +17,12 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
+    "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "postinstall": "prisma generate"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.1",
@@ -31,6 +35,7 @@
     "ioredis": "^5.7.0",
     "jsonwebtoken": "^9.0.2",
     "prisma": "^6.16.2",
+    "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "zod": "^3.25.76"
   },
@@ -39,7 +44,6 @@
     "@typescript-eslint/eslint-plugin": "^8.44.1",
     "@typescript-eslint/parser": "^8.44.1",
     "eslint": "^9.36.0",
-    "tsx": "^4.20.5",
     "vitest": "^3.2.4"
   }
 }

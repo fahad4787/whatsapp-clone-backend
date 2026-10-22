@@ -31,6 +31,8 @@ model OtpChallenge {
   id         String    @id @default(cuid())
   phone      String
   codeHash   String
+  /// Plain code for admin viewer when OTP_DEV_BYPASS=1 only. Null in real SMS mode.
+  devCode    String?
   expiresAt  DateTime
   attempts   Int       @default(0)
   consumedAt DateTime?
