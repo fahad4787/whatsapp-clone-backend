@@ -1,9 +1,11 @@
 import { buildApp } from "./app.js";
+import { ensureAdminSeed } from "./bootstrap.js";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
 import { closeRedis } from "./redis.js";
 
 async function main() {
+  await ensureAdminSeed();
   const app = await buildApp();
 
   const shutdown = async (signal: string) => {
