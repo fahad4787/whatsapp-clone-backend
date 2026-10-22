@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
+import websocket from "@fastify/websocket";
 import { config } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
@@ -13,6 +14,7 @@ import { adminOtpRoutes } from "./routes/admin/otps.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { messageRoutes } from "./routes/messages.js";
 import { peopleRoutes } from "./routes/people.js";
+import { wsRoutes } from "./routes/ws.js";
 
 const uploadsRoot = path.join(process.cwd(), "uploads");
 mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
@@ -27,6 +29,10 @@ export async function buildApp() {
   await app.register(cors, {
     origin: config.corsOrigin.split(",").map((s: string) => s.trim()),
     credentials: true,
+  });
+
+  await app.register(websocket, {
+    options: { maxPayload: 64 * 1024 },
   });
 
   await app.register(multipart, {
@@ -50,6 +56,7 @@ export async function buildApp() {
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
   await app.register(peopleRoutes);
+  await app.register(wsRoutes);
 
   return app;
 }

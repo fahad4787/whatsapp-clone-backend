@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../db.js";
 import { toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
+import { realtimeHub } from "../realtime/hub.js";
 
 async function assertMember(conversationId: string, userId: string) {
   return prisma.conversationMember.findUnique({
@@ -34,7 +35,7 @@ export async function messageRoutes(app: FastifyInstance) {
     });
 
     // Mark peer messages as delivered when listed
-    await prisma.message.updateMany({
+    const delivered = await prisma.message.updateMany({
       where: {
         conversationId: id,
         senderId: { not: userId },
@@ -42,6 +43,16 @@ export async function messageRoutes(app: FastifyInstance) {
       },
       data: { status: "DELIVERED" },
     });
+    if (delivered.count > 0) {
+      realtimeHub.toRoom(id, {
+        type: "receipt",
+        data: {
+          conversation_id: id,
+          message_id: null,
+          status: "delivered",
+        },
+      });
+    }
 
     return { items: rows.map(toMessageDto) };
   });
@@ -94,7 +105,10 @@ export async function messageRoutes(app: FastifyInstance) {
       data: { updatedAt: new Date() },
     });
 
-    return reply.code(201).send(toMessageDto(msg));
+    const dto = toMessageDto(msg);
+    realtimeHub.toRoom(id, { type: "message", data: dto });
+
+    return reply.code(201).send(dto);
   });
 
   app.post("/api/conversations/:id/read", { preHandler: requireUser }, async (req, reply) => {
@@ -105,7 +119,7 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found" });
     }
 
-    await prisma.message.updateMany({
+    const updated = await prisma.message.updateMany({
       where: {
         conversationId: id,
         senderId: { not: userId },
@@ -113,6 +127,16 @@ export async function messageRoutes(app: FastifyInstance) {
       },
       data: { status: "READ" },
     });
+    if (updated.count > 0) {
+      realtimeHub.toRoom(id, {
+        type: "receipt",
+        data: {
+          conversation_id: id,
+          message_id: null,
+          status: "read",
+        },
+      });
+    }
 
     return reply.code(204).send();
   });
