@@ -13,11 +13,13 @@ import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminOtpRoutes } from "./routes/admin/otps.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { messageRoutes } from "./routes/messages.js";
+import { mediaRoutes } from "./routes/media.js";
 import { peopleRoutes } from "./routes/people.js";
 import { wsRoutes } from "./routes/ws.js";
 
 const uploadsRoot = path.join(process.cwd(), "uploads");
 mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
+mkdirSync(path.join(uploadsRoot, "media"), { recursive: true });
 
 export async function buildApp() {
   const app = Fastify({
@@ -37,7 +39,7 @@ export async function buildApp() {
 
   await app.register(multipart, {
     limits: {
-      fileSize: 5 * 1024 * 1024,
+      fileSize: 10 * 1024 * 1024,
       files: 1,
     },
   });
@@ -55,6 +57,7 @@ export async function buildApp() {
   await app.register(adminOtpRoutes);
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
+  await app.register(mediaRoutes);
   await app.register(peopleRoutes);
   await app.register(wsRoutes);
 

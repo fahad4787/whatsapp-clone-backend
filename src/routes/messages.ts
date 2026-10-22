@@ -60,10 +60,26 @@ export async function messageRoutes(app: FastifyInstance) {
   app.post("/api/conversations/:id/messages", { preHandler: requireUser }, async (req, reply) => {
     const userId = (req as typeof req & { userId: string }).userId;
     const { id } = req.params as { id: string };
+    const attachmentSchema = z
+      .object({
+        key: z.string().min(1).max(200),
+        url: z.string().url().max(2000),
+        mime: z.string().min(3).max(100).optional(),
+        size: z.number().int().nonnegative().optional(),
+        name: z.string().max(200).optional(),
+        width: z.number().int().nonnegative().optional(),
+        height: z.number().int().nonnegative().optional(),
+      })
+      .optional();
+
     const parsed = z
       .object({
-        text: z.string().trim().min(1).max(4000),
+        text: z.string().trim().max(4000).optional(),
         client_id: z.string().min(1).max(80).optional(),
+        attachment: attachmentSchema,
+      })
+      .refine((b) => (b.text && b.text.length > 0) || b.attachment, {
+        message: "text_or_attachment_required",
       })
       .safeParse(req.body);
     if (!parsed.success) {
@@ -89,12 +105,14 @@ export async function messageRoutes(app: FastifyInstance) {
       }
     }
 
+    const isImage = Boolean(parsed.data.attachment);
     const msg = await prisma.message.create({
       data: {
         conversationId: id,
         senderId: userId,
-        type: "TEXT",
-        text: parsed.data.text,
+        type: isImage ? "IMAGE" : "TEXT",
+        text: parsed.data.text?.trim() || (isImage ? "Photo" : null),
+        attachment: parsed.data.attachment ?? undefined,
         clientId: parsed.data.client_id,
         status: "SENT",
       },

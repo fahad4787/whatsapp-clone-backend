@@ -121,6 +121,7 @@ model Conversation {
 
 enum MessageType {
   TEXT
+  IMAGE
 }
 
 enum MessageStatus {
@@ -136,6 +137,8 @@ model Message {
   senderId       String
   type           MessageType   @default(TEXT)
   text           String?
+  /// AttachmentDto-shaped JSON (url, key, mime, size, …)
+  attachment     Json?
   clientId       String?
   status         MessageStatus @default(SENT)
   createdAt      DateTime      @default(now())
