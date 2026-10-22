@@ -10,6 +10,8 @@ import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminOtpRoutes } from "./routes/admin/otps.js";
+import { conversationRoutes } from "./routes/conversations.js";
+import { peopleRoutes } from "./routes/people.js";
 
 const uploadsRoot = path.join(process.cwd(), "uploads");
 mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
@@ -44,6 +46,8 @@ export async function buildApp() {
   await app.register(meRoutes);
   await app.register(adminAuthRoutes);
   await app.register(adminOtpRoutes);
+  await app.register(conversationRoutes);
+  await app.register(peopleRoutes);
 
   return app;
 }
