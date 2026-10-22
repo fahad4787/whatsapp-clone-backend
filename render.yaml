@@ -31,6 +31,8 @@ services:
         value: "1"
       - key: CORS_ORIGIN
         sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
 
   - type: keyvalue
     name: aivora-redis

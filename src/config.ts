@@ -25,5 +25,6 @@ export const config = {
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:3000",
   publicBaseUrl:
     process.env.PUBLIC_BASE_URL ??
+    process.env.RENDER_EXTERNAL_URL ??
     `http://localhost:${process.env.PORT ?? 8080}`,
 };
