@@ -40,7 +40,7 @@ export async function wsRoutes(app: FastifyInstance) {
     realtimeHub.attach(socket, userId);
     realtimeHub.send(socket, { type: "auth.ok", data: { user_id: userId } });
 
-    socket.on("message", (raw) => {
+    socket.on("message", (raw: WebSocket.RawData) => {
       void (async () => {
         let frame: RealtimeFrame;
         try {
