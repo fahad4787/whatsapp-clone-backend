@@ -104,6 +104,13 @@ describe("conversations", () => {
   });
 
   it("searches people for new chat", async () => {
+    const empty = await app.inject({
+      method: "GET",
+      url: "/api/people/search",
+      headers: { authorization: `Bearer ${userA.access}` },
+    });
+    expect(empty.json().items).toEqual([]);
+
     const res = await app.inject({
       method: "GET",
       url: `/api/people/search?q=${encodeURIComponent(userB.phone.slice(-4))}`,

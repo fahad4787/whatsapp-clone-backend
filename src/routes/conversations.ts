@@ -6,6 +6,7 @@ import { requireUser } from "../plugins/auth.js";
 
 const memberInclude = {
   members: { include: { user: true } },
+  messages: { orderBy: { createdAt: "desc" as const }, take: 1 },
 } as const;
 
 async function loadConversation(id: string) {

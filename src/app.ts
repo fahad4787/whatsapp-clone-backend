@@ -11,6 +11,7 @@ import { meRoutes } from "./routes/me.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminOtpRoutes } from "./routes/admin/otps.js";
 import { conversationRoutes } from "./routes/conversations.js";
+import { messageRoutes } from "./routes/messages.js";
 import { peopleRoutes } from "./routes/people.js";
 
 const uploadsRoot = path.join(process.cwd(), "uploads");
@@ -47,6 +48,7 @@ export async function buildApp() {
   await app.register(adminAuthRoutes);
   await app.register(adminOtpRoutes);
   await app.register(conversationRoutes);
+  await app.register(messageRoutes);
   await app.register(peopleRoutes);
 
   return app;

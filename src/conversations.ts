@@ -1,8 +1,12 @@
-import type { Conversation, ConversationMember, User } from "@prisma/client";
+import type { Conversation, ConversationMember, Message, User } from "@prisma/client";
+import { toMessageDto } from "./messages.js";
 import { toUserDto } from "./profile.js";
 
 type MemberWithUser = ConversationMember & { user: User };
-type ConversationWithMembers = Conversation & { members: MemberWithUser[] };
+type ConversationWithMembers = Conversation & {
+  members: MemberWithUser[];
+  messages?: Message[];
+};
 
 export function directKeyFor(userA: string, userB: string): string {
   return [userA, userB].sort().join(":");
@@ -17,6 +21,7 @@ export function toConversationDto(conv: ConversationWithMembers, viewerId: strin
     conv.type === "GROUP"
       ? conv.title
       : peer?.displayName || peer?.phone || "Chat";
+  const last = conv.messages?.[0] ?? null;
 
   return {
     id: conv.id,
@@ -27,8 +32,8 @@ export function toConversationDto(conv: ConversationWithMembers, viewerId: strin
     avatar_thumb: conv.type === "GROUP" ? conv.avatarUrl : peer?.avatarUrl ?? null,
     created_at: conv.createdAt.toISOString(),
     updated_at: conv.updatedAt.toISOString(),
-    last_message: null,
-    last_message_at: null,
+    last_message: last ? toMessageDto(last) : null,
+    last_message_at: last?.createdAt.toISOString() ?? null,
     unread_count: 0,
     archived: me?.archived ?? false,
     pinned: false,
