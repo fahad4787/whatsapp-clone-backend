@@ -23,4 +23,7 @@ export const config = {
   otpResendSec: Number(process.env.OTP_RESEND_SEC ?? 60),
   otpDevBypass: (process.env.OTP_DEV_BYPASS ?? "1") === "1",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:3000",
+  publicBaseUrl:
+    process.env.PUBLIC_BASE_URL ??
+    `http://localhost:${process.env.PORT ?? 8080}`,
 };

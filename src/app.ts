@@ -1,11 +1,18 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
+import fastifyStatic from "@fastify/static";
 import { config } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminOtpRoutes } from "./routes/admin/otps.js";
+
+const uploadsRoot = path.join(process.cwd(), "uploads");
+mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
 
 export async function buildApp() {
   const app = Fastify({
@@ -17,6 +24,19 @@ export async function buildApp() {
   await app.register(cors, {
     origin: config.corsOrigin.split(",").map((s: string) => s.trim()),
     credentials: true,
+  });
+
+  await app.register(multipart, {
+    limits: {
+      fileSize: 5 * 1024 * 1024,
+      files: 1,
+    },
+  });
+
+  await app.register(fastifyStatic, {
+    root: uploadsRoot,
+    prefix: "/uploads/",
+    decorateReply: false,
   });
 
   await app.register(healthRoutes);
