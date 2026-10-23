@@ -3,6 +3,7 @@ import type { WebSocket } from "ws";
 import { z } from "zod";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { prisma } from "../db.js";
+import { broadcastUserPresence, onlineMemberIds } from "../presenceBroadcast.js";
 import { realtimeHub, type RealtimeFrame } from "../realtime/hub.js";
 
 async function assertMember(conversationId: string, userId: string) {
@@ -37,8 +38,13 @@ export async function wsRoutes(app: FastifyInstance) {
       return;
     }
 
+    const wasOffline = !realtimeHub.isOnline(userId);
     realtimeHub.attach(socket, userId);
     realtimeHub.send(socket, { type: "auth.ok", data: { user_id: userId } });
+    // First socket for this user → app is in foreground / online.
+    if (wasOffline) {
+      void broadcastUserPresence(userId, true);
+    }
 
     socket.on("message", (raw: WebSocket.RawData) => {
       void (async () => {
@@ -70,25 +76,13 @@ export async function wsRoutes(app: FastifyInstance) {
             return;
           }
           realtimeHub.joinRoom(socket, parsed.data.conversation_id);
-          realtimeHub.toRoom(
-            parsed.data.conversation_id,
-            {
-              type: "presence",
-              data: {
-                user_id: userId,
-                conversation_id: parsed.data.conversation_id,
-                online: true,
-                last_seen_at: null,
-              },
-            },
-            userId,
-          );
-          // Snapshot of who is already in this chat (so Online isn't stuck forever).
+          // Snapshot of who has the app open (not merely who has this chat open).
+          const onlineIds = await onlineMemberIds(parsed.data.conversation_id);
           realtimeHub.send(socket, {
             type: "presence_snapshot",
             data: {
               conversation_id: parsed.data.conversation_id,
-              online_user_ids: realtimeHub.onlineUserIdsInRoom(parsed.data.conversation_id),
+              online_user_ids: onlineIds,
             },
           });
           realtimeHub.send(socket, {
@@ -103,20 +97,8 @@ export async function wsRoutes(app: FastifyInstance) {
             .object({ conversation_id: z.string().min(1) })
             .safeParse(frame.data);
           if (!parsed.success) return;
-          const conversationId = parsed.data.conversation_id;
-          realtimeHub.leaveRoom(socket, conversationId);
-          // If this user has no other socket still in the room, tell peers they left.
-          if (!realtimeHub.isInRoom(userId, conversationId)) {
-            realtimeHub.toRoom(conversationId, {
-              type: "presence",
-              data: {
-                user_id: userId,
-                conversation_id: conversationId,
-                online: false,
-                last_seen_at: new Date().toISOString(),
-              },
-            });
-          }
+          realtimeHub.leaveRoom(socket, parsed.data.conversation_id);
+          // Leaving a chat does NOT mean offline — only WS disconnect does.
           return;
         }
 
@@ -147,22 +129,10 @@ export async function wsRoutes(app: FastifyInstance) {
     });
 
     socket.on("close", () => {
-      const rooms = realtimeHub.roomsOf(socket);
       realtimeHub.detach(socket);
-      const stillOnline = realtimeHub.isOnline(userId);
-      if (stillOnline) return;
-      const seenAt = new Date().toISOString();
-      void import("../privacy.js").then(({ touchLastSeen }) => touchLastSeen(userId));
-      for (const conversationId of rooms) {
-        realtimeHub.toRoom(conversationId, {
-          type: "presence",
-          data: {
-            user_id: userId,
-            conversation_id: conversationId,
-            online: false,
-            last_seen_at: seenAt,
-          },
-        });
+      // Last socket gone → app backgrounded / killed → offline.
+      if (!realtimeHub.isOnline(userId)) {
+        void broadcastUserPresence(userId, false);
       }
     });
   });
