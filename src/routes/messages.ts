@@ -127,6 +127,17 @@ export async function messageRoutes(app: FastifyInstance) {
     const dto = toMessageDto(msg);
     realtimeHub.toRoom(id, { type: "message", data: dto });
 
+    // Peers on home (WS connected but not in this room) still get the event for badge/preview.
+    const peers = await prisma.conversationMember.findMany({
+      where: { conversationId: id, userId: { not: userId } },
+      select: { userId: true },
+    });
+    for (const peer of peers) {
+      if (!realtimeHub.isInRoom(peer.userId, id)) {
+        realtimeHub.toUser(peer.userId, { type: "message", data: dto });
+      }
+    }
+
     const preview =
       msg.type === "IMAGE" ? "Photo" : (msg.text ?? "New message");
     void notifyNewMessage({

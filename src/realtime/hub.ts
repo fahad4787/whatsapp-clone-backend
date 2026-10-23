@@ -52,6 +52,16 @@ class RealtimeHub {
     return (this.byUser.get(userId)?.size ?? 0) > 0;
   }
 
+  /** True if the user currently has a socket joined to this conversation (chat open). */
+  isInRoom(userId: string, conversationId: string): boolean {
+    const sockets = this.byUser.get(userId);
+    if (!sockets) return false;
+    for (const socket of sockets) {
+      if (this.meta.get(socket)?.rooms.has(conversationId)) return true;
+    }
+    return false;
+  }
+
   joinRoom(socket: WebSocket, conversationId: string) {
     const info = this.meta.get(socket);
     if (!info) return;

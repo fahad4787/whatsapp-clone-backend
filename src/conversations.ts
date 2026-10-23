@@ -12,7 +12,11 @@ export function directKeyFor(userA: string, userB: string): string {
   return [userA, userB].sort().join(":");
 }
 
-export function toConversationDto(conv: ConversationWithMembers, viewerId: string) {
+export function toConversationDto(
+  conv: ConversationWithMembers,
+  viewerId: string,
+  unreadCount = 0,
+) {
   const me = conv.members.find((m) => m.userId === viewerId);
   const peers = conv.members.filter((m) => m.userId !== viewerId);
   const peer = conv.type === "DIRECT" ? peers[0]?.user : undefined;
@@ -34,7 +38,7 @@ export function toConversationDto(conv: ConversationWithMembers, viewerId: strin
     updated_at: conv.updatedAt.toISOString(),
     last_message: last ? toMessageDto(last) : null,
     last_message_at: last?.createdAt.toISOString() ?? null,
-    unread_count: 0,
+    unread_count: unreadCount,
     archived: me?.archived ?? false,
     pinned: false,
     my_role: me?.role === "ADMIN" ? "admin" : "member",

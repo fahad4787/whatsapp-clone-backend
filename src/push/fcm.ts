@@ -51,14 +51,15 @@ export async function notifyNewMessage(opts: {
     },
     select: { userId: true },
   });
-  const offlineUserIds = members
+  // Push unless they currently have that chat open (home / other screens still get notify).
+  const notifyUserIds = members
     .map((m) => m.userId)
-    .filter((id) => !realtimeHub.isOnline(id));
-  if (offlineUserIds.length === 0) return;
+    .filter((id) => !realtimeHub.isInRoom(id, opts.conversationId));
+  if (notifyUserIds.length === 0) return;
 
   const devices = await prisma.device.findMany({
     where: {
-      userId: { in: offlineUserIds },
+      userId: { in: notifyUserIds },
       pushToken: { not: null },
     },
     select: { id: true, pushToken: true },

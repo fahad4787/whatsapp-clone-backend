@@ -27,9 +27,19 @@ export async function conversationRoutes(app: FastifyInstance) {
       orderBy: { conversation: { updatedAt: "desc" } },
     });
 
-    return {
-      items: memberships.map((m) => toConversationDto(m.conversation, userId)),
-    };
+    const items = await Promise.all(
+      memberships.map(async (m) => {
+        const unread = await prisma.message.count({
+          where: {
+            conversationId: m.conversationId,
+            senderId: { not: userId },
+            status: { not: "READ" },
+          },
+        });
+        return toConversationDto(m.conversation, userId, unread);
+      }),
+    );
+    return { items };
   });
 
   app.get("/api/conversations/:id", { preHandler: requireUser }, async (req, reply) => {
@@ -39,7 +49,14 @@ export async function conversationRoutes(app: FastifyInstance) {
     if (!conv || !conv.members.some((m) => m.userId === userId)) {
       return reply.code(404).send({ error: "not_found" });
     }
-    return toConversationDto(conv, userId);
+    const unread = await prisma.message.count({
+      where: {
+        conversationId: id,
+        senderId: { not: userId },
+        status: { not: "READ" },
+      },
+    });
+    return toConversationDto(conv, userId, unread);
   });
 
   app.post("/api/conversations/direct", { preHandler: requireUser }, async (req, reply) => {
