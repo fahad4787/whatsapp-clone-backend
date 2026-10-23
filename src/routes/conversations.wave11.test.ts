@@ -73,6 +73,7 @@ describe("Wave 11 archive / mute / pin / block / search", () => {
     const item = list.json().items.find((c: { id: string }) => c.id === conversationId);
     expect(item?.archived).toBe(true);
     expect(item?.pinned).toBe(true);
+    expect(item?.blocked_by_me).toBe(false);
 
     const send = await app.inject({
       method: "POST",

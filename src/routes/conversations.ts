@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { isBlockedEitherWay } from "../blocks.js";
-import { directKeyFor, toConversationDto } from "../conversations.js";
+import { directKeyFor, toConversationDtoAsync } from "../conversations.js";
 import { prisma } from "../db.js";
 import { requireUser } from "../plugins/auth.js";
 
@@ -45,7 +45,7 @@ export async function conversationRoutes(app: FastifyInstance) {
             ...(m.clearedAt ? { createdAt: { gt: m.clearedAt } } : {}),
           },
         });
-        return toConversationDto(m.conversation, userId, unread);
+        return toConversationDtoAsync(m.conversation, userId, unread);
       }),
     );
     // Pinned first (nulls last), then recency — mirrors WhatsApp home.
@@ -76,7 +76,7 @@ export async function conversationRoutes(app: FastifyInstance) {
         ...(membership?.clearedAt ? { createdAt: { gt: membership.clearedAt } } : {}),
       },
     });
-    return toConversationDto(conv, userId, unread);
+    return toConversationDtoAsync(conv, userId, unread);
   });
 
   app.post("/api/conversations/direct", { preHandler: requireUser }, async (req, reply) => {
@@ -104,7 +104,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       include: memberInclude,
     });
     if (existing) {
-      return toConversationDto(existing, userId);
+      return toConversationDtoAsync(existing, userId);
     }
 
     const created = await prisma.conversation.create({
@@ -120,7 +120,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       },
       include: memberInclude,
     });
-    return reply.code(201).send(toConversationDto(created, userId));
+    return reply.code(201).send(await toConversationDtoAsync(created, userId));
   });
 
   app.post("/api/conversations/group", { preHandler: requireUser }, async (req, reply) => {
@@ -160,7 +160,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       },
       include: memberInclude,
     });
-    return reply.code(201).send(toConversationDto(created, userId));
+    return reply.code(201).send(await toConversationDtoAsync(created, userId));
   });
 
   app.post("/api/conversations/:id/members", { preHandler: requireUser }, async (req, reply) => {
@@ -186,7 +186,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     const existingIds = new Set(conv.members.map((m) => m.userId));
     const toAdd = [...new Set(parsed.data.user_ids)].filter((id) => !existingIds.has(id));
     if (toAdd.length === 0) {
-      return toConversationDto(conv, userId);
+      return toConversationDtoAsync(conv, userId);
     }
 
     const users = await prisma.user.findMany({
@@ -209,7 +209,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     });
 
     const updated = await loadConversation(id);
-    return toConversationDto(updated!, userId);
+    return toConversationDtoAsync(updated!, userId);
   });
 
   app.put("/api/conversations/:id/settings", { preHandler: requireUser }, async (req, reply) => {
@@ -272,12 +272,17 @@ export async function conversationRoutes(app: FastifyInstance) {
       }
     }
 
-    await prisma.conversationMember.update({
+    const updated = await prisma.conversationMember.update({
       where: { id: member.id },
       data,
     });
 
-    const conv = await loadConversation(id);
-    return toConversationDto(conv!, userId);
+    // Slim payload — avoids Android kotlinx decode issues on full conversation graphs.
+    return {
+      id,
+      archived: updated.archived,
+      pinned: Boolean(updated.pinnedAt),
+      muted_until: updated.mutedUntil?.toISOString() ?? null,
+    };
   });
 }

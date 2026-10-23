@@ -102,25 +102,38 @@ export async function messageRoutes(app: FastifyInstance) {
       include: messageInclude,
     });
 
-    const toDeliver = await prisma.message.findMany({
-      where: {
-        conversationId: id,
-        senderId: { not: userId },
-        status: "SENT",
-        deletedForEveryoneAt: null,
-      },
-      select: { id: true },
+    const convMeta = await prisma.conversation.findUnique({
+      where: { id },
+      include: { members: { select: { userId: true } } },
     });
-    if (toDeliver.length > 0) {
-      await prisma.message.updateMany({
-        where: { id: { in: toDeliver.map((m) => m.id) } },
-        data: { status: "DELIVERED" },
+    const peerId = convMeta?.members.find((m) => m.userId !== userId)?.userId;
+    const blocked =
+      convMeta?.type === "DIRECT" && peerId
+        ? await isBlockedEitherWay(userId, peerId)
+        : false;
+
+    // Blocked chats never advance ticks (WhatsApp single-tick behavior).
+    if (!blocked) {
+      const toDeliver = await prisma.message.findMany({
+        where: {
+          conversationId: id,
+          senderId: { not: userId },
+          status: "SENT",
+          deletedForEveryoneAt: null,
+        },
+        select: { id: true },
       });
-      void emitReceipt(
-        id,
-        "delivered",
-        toDeliver.map((m) => m.id),
-      );
+      if (toDeliver.length > 0) {
+        await prisma.message.updateMany({
+          where: { id: { in: toDeliver.map((m) => m.id) } },
+          data: { status: "DELIVERED" },
+        });
+        void emitReceipt(
+          id,
+          "delivered",
+          toDeliver.map((m) => m.id),
+        );
+      }
     }
 
     return { items: rows.map((m) => toMessageDto(m, userId)) };
@@ -269,6 +282,19 @@ export async function messageRoutes(app: FastifyInstance) {
     const member = await assertMember(id, userId);
     if (!member) {
       return reply.code(404).send({ error: "not_found" });
+    }
+
+    const convMeta = await prisma.conversation.findUnique({
+      where: { id },
+      include: { members: { select: { userId: true } } },
+    });
+    const peerId = convMeta?.members.find((m) => m.userId !== userId)?.userId;
+    if (
+      convMeta?.type === "DIRECT" &&
+      peerId &&
+      (await isBlockedEitherWay(userId, peerId))
+    ) {
+      return { ok: true, updated: 0 };
     }
 
     const toRead = await prisma.message.findMany({
