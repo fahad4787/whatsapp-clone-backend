@@ -189,8 +189,11 @@ export async function messageRoutes(app: FastifyInstance) {
 
     const conv = await prisma.conversation.findUnique({
       where: { id },
-      include: { members: { select: { userId: true } } },
+      include: { members: { select: { userId: true, role: true } } },
     });
+    if (conv?.type === "GROUP" && conv.onlyAdminsCanSend && member.role !== "ADMIN") {
+      return reply.code(403).send({ error: "admins_only" });
+    }
     if (conv?.type === "DIRECT") {
       const peerId = conv.members.find((m) => m.userId !== userId)?.userId;
       if (peerId && (await isBlockedEitherWay(userId, peerId))) {

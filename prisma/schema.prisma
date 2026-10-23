@@ -129,6 +129,8 @@ model Conversation {
   avatarUrl   String?
   /// Sorted "userA:userB" for DIRECT uniqueness.
   directKey   String?          @unique
+  onlyAdminsCanSend     Boolean @default(false)
+  onlyAdminsCanEditInfo Boolean @default(false)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 

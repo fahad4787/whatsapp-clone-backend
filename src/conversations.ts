@@ -71,6 +71,8 @@ export function toConversationDto(
     blocked_by_me: blockFlags.blocked_by_me,
     blocked_me: blockFlags.blocked_me,
     my_role: me?.role === "ADMIN" ? "admin" : "member",
+    only_admins_can_send: conv.onlyAdminsCanSend ?? false,
+    only_admins_can_edit_info: conv.onlyAdminsCanEditInfo ?? false,
     peer: peer
       ? {
           id: peer.id,

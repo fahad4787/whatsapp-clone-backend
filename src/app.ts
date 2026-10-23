@@ -26,6 +26,7 @@ import { initFcm } from "./push/fcm.js";
 
 const uploadsRoot = path.join(process.cwd(), "uploads");
 mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
+mkdirSync(path.join(uploadsRoot, "group-avatars"), { recursive: true });
 mkdirSync(path.join(uploadsRoot, "media"), { recursive: true });
 
 export async function buildApp() {

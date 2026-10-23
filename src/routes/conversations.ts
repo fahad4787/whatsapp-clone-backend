@@ -1,9 +1,17 @@
+import { createWriteStream } from "node:fs";
+import { mkdir, unlink } from "node:fs/promises";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { isBlockedEitherWay } from "../blocks.js";
 import { directKeyFor, toConversationDtoAsync } from "../conversations.js";
 import { prisma } from "../db.js";
 import { requireUser } from "../plugins/auth.js";
+import { publicUrl } from "../publicUrl.js";
+import { extFromMime } from "../mediaTypes.js";
+
+const GROUP_AVATAR_DIR = path.join(process.cwd(), "uploads", "group-avatars");
 
 const memberInclude = {
   members: { include: { user: true } },
@@ -284,5 +292,252 @@ export async function conversationRoutes(app: FastifyInstance) {
       pinned: Boolean(updated.pinnedAt),
       muted_until: updated.mutedUntil?.toISOString() ?? null,
     };
+  });
+
+  // --- Wave 13: group admin ---
+
+  async function requireGroupAdmin(id: string, userId: string) {
+    const conv = await loadConversation(id);
+    if (!conv) return { error: "not_found" as const, code: 404 as const };
+    if (conv.type !== "GROUP") return { error: "not_a_group" as const, code: 400 as const };
+    const me = conv.members.find((m) => m.userId === userId);
+    if (!me) return { error: "not_found" as const, code: 404 as const };
+    if (me.role !== "ADMIN") return { error: "forbidden" as const, code: 403 as const };
+    return { conv, me };
+  }
+
+  function canEditGroupInfo(
+    conv: Awaited<ReturnType<typeof loadConversation>>,
+    me: { role: string },
+  ) {
+    if (!conv) return false;
+    if (me.role === "ADMIN") return true;
+    return !conv.onlyAdminsCanEditInfo;
+  }
+
+  app.delete("/api/conversations/:id/members/:userId", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id, userId: targetId } = req.params as { id: string; userId: string };
+    const gate = await requireGroupAdmin(id, userId);
+    if ("error" in gate && gate.error) {
+      return reply.code(gate.code).send({ error: gate.error });
+    }
+    const { conv } = gate;
+    if (targetId === userId) {
+      return reply.code(400).send({ error: "use_leave" });
+    }
+    const target = conv.members.find((m) => m.userId === targetId);
+    if (!target) {
+      return reply.code(404).send({ error: "member_not_found" });
+    }
+    if (target.role === "ADMIN") {
+      const adminCount = conv.members.filter((m) => m.role === "ADMIN").length;
+      if (adminCount <= 1) {
+        return reply.code(400).send({ error: "last_admin" });
+      }
+    }
+    await prisma.conversationMember.delete({
+      where: { conversationId_userId: { conversationId: id, userId: targetId } },
+    });
+    await prisma.conversation.update({ where: { id }, data: { updatedAt: new Date() } });
+    const updated = await loadConversation(id);
+    return toConversationDtoAsync(updated!, userId);
+  });
+
+  app.put("/api/conversations/:id/members/:userId", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id, userId: targetId } = req.params as { id: string; userId: string };
+    const parsed = z
+      .object({ role: z.enum(["admin", "member"]) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const gate = await requireGroupAdmin(id, userId);
+    if ("error" in gate && gate.error) {
+      return reply.code(gate.code).send({ error: gate.error });
+    }
+    const { conv } = gate;
+    const target = conv.members.find((m) => m.userId === targetId);
+    if (!target) {
+      return reply.code(404).send({ error: "member_not_found" });
+    }
+    const nextRole = parsed.data.role === "admin" ? "ADMIN" : "MEMBER";
+    if (target.role === "ADMIN" && nextRole === "MEMBER") {
+      const adminCount = conv.members.filter((m) => m.role === "ADMIN").length;
+      if (adminCount <= 1) {
+        return reply.code(400).send({ error: "last_admin" });
+      }
+    }
+    await prisma.conversationMember.update({
+      where: { conversationId_userId: { conversationId: id, userId: targetId } },
+      data: { role: nextRole },
+    });
+    const updated = await loadConversation(id);
+    return toConversationDtoAsync(updated!, userId);
+  });
+
+  app.put("/api/conversations/:id/info", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        title: z.string().trim().min(1).max(80).optional(),
+        description: z.string().trim().max(500).nullable().optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    if (parsed.data.title === undefined && parsed.data.description === undefined) {
+      return reply.code(400).send({ error: "empty_info" });
+    }
+    const conv = await loadConversation(id);
+    if (!conv || conv.type !== "GROUP") {
+      return reply.code(conv ? 400 : 404).send({ error: conv ? "not_a_group" : "not_found" });
+    }
+    const me = conv.members.find((m) => m.userId === userId);
+    if (!me) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!canEditGroupInfo(conv, me)) {
+      return reply.code(403).send({ error: "admins_only" });
+    }
+    const data: { title?: string; description?: string | null } = {};
+    if (parsed.data.title !== undefined) data.title = parsed.data.title;
+    if (parsed.data.description !== undefined) data.description = parsed.data.description;
+    await prisma.conversation.update({ where: { id }, data });
+    const updated = await loadConversation(id);
+    return toConversationDtoAsync(updated!, userId);
+  });
+
+  app.post("/api/conversations/:id/avatar", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const conv = await loadConversation(id);
+    if (!conv || conv.type !== "GROUP") {
+      return reply.code(conv ? 400 : 404).send({ error: conv ? "not_a_group" : "not_found" });
+    }
+    const me = conv.members.find((m) => m.userId === userId);
+    if (!me) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!canEditGroupInfo(conv, me)) {
+      return reply.code(403).send({ error: "admins_only" });
+    }
+    const file = await req.file();
+    if (!file) {
+      return reply.code(400).send({ error: "file_required" });
+    }
+    if (!file.mimetype.startsWith("image/")) {
+      return reply.code(400).send({ error: "invalid_mime" });
+    }
+    await mkdir(GROUP_AVATAR_DIR, { recursive: true });
+    const filename = `${id}-${Date.now()}.${extFromMime(file.mimetype)}`;
+    const diskPath = path.join(GROUP_AVATAR_DIR, filename);
+    try {
+      await pipeline(file.file, createWriteStream(diskPath));
+    } catch {
+      await unlink(diskPath).catch(() => undefined);
+      return reply.code(413).send({ error: "file_too_large" });
+    }
+    if (file.file.truncated) {
+      await unlink(diskPath).catch(() => undefined);
+      return reply.code(413).send({ error: "file_too_large" });
+    }
+    const avatarUrl = publicUrl(`/uploads/group-avatars/${filename}`);
+    if (conv.avatarUrl?.includes("/uploads/group-avatars/")) {
+      const oldName = conv.avatarUrl.split("/uploads/group-avatars/").pop();
+      if (oldName) {
+        await unlink(path.join(GROUP_AVATAR_DIR, oldName)).catch(() => undefined);
+      }
+    }
+    await prisma.conversation.update({ where: { id }, data: { avatarUrl } });
+    const updated = await loadConversation(id);
+    return toConversationDtoAsync(updated!, userId);
+  });
+
+  app.put("/api/conversations/:id/privacy", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        only_admins_can_send: z.boolean().optional(),
+        only_admins_can_edit_info: z.boolean().optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    if (
+      parsed.data.only_admins_can_send === undefined &&
+      parsed.data.only_admins_can_edit_info === undefined
+    ) {
+      return reply.code(400).send({ error: "empty_privacy" });
+    }
+    const gate = await requireGroupAdmin(id, userId);
+    if ("error" in gate && gate.error) {
+      return reply.code(gate.code).send({ error: gate.error });
+    }
+    await prisma.conversation.update({
+      where: { id },
+      data: {
+        ...(parsed.data.only_admins_can_send !== undefined
+          ? { onlyAdminsCanSend: parsed.data.only_admins_can_send }
+          : {}),
+        ...(parsed.data.only_admins_can_edit_info !== undefined
+          ? { onlyAdminsCanEditInfo: parsed.data.only_admins_can_edit_info }
+          : {}),
+      },
+    });
+    const updated = await loadConversation(id);
+    return toConversationDtoAsync(updated!, userId);
+  });
+
+  app.post("/api/conversations/:id/leave", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const conv = await loadConversation(id);
+    if (!conv || conv.type !== "GROUP") {
+      return reply.code(conv ? 400 : 404).send({ error: conv ? "not_a_group" : "not_found" });
+    }
+    const me = conv.members.find((m) => m.userId === userId);
+    if (!me) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const others = conv.members.filter((m) => m.userId !== userId);
+    if (me.role === "ADMIN") {
+      const otherAdmins = others.filter((m) => m.role === "ADMIN");
+      if (otherAdmins.length === 0 && others.length > 0) {
+        // Promote the earliest-joined remaining member.
+        const successor = [...others].sort(
+          (a, b) => a.joinedAt.getTime() - b.joinedAt.getTime(),
+        )[0];
+        await prisma.conversationMember.update({
+          where: { conversationId_userId: { conversationId: id, userId: successor.userId } },
+          data: { role: "ADMIN" },
+        });
+      }
+    }
+    await prisma.conversationMember.delete({
+      where: { conversationId_userId: { conversationId: id, userId } },
+    });
+    if (others.length === 0) {
+      await prisma.conversation.delete({ where: { id } });
+    } else {
+      await prisma.conversation.update({ where: { id }, data: { updatedAt: new Date() } });
+    }
+    return { ok: true, id };
+  });
+
+  app.delete("/api/conversations/:id", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const gate = await requireGroupAdmin(id, userId);
+    if ("error" in gate && gate.error) {
+      return reply.code(gate.code).send({ error: gate.error });
+    }
+    await prisma.conversation.delete({ where: { id } });
+    return { ok: true, id };
   });
 }
