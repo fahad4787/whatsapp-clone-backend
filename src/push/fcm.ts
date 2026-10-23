@@ -78,19 +78,28 @@ export async function notifyNewMessage(opts: {
     return;
   }
 
+  const preview = opts.preview.slice(0, 180);
   const res: BatchResponse = await getMessaging(app).sendEachForMulticast({
     tokens,
     notification: {
       title: "Aivora",
-      body: opts.preview.slice(0, 180),
+      body: preview,
     },
     data: {
       type: "message",
       conversation_id: opts.conversationId,
       message_id: opts.messageId,
+      title: "Aivora",
+      preview,
     },
     android: {
       priority: "high",
+      notification: {
+        channelId: "messages",
+        priority: "high",
+        defaultSound: true,
+        defaultVibrateTimings: true,
+      },
     },
   });
 
