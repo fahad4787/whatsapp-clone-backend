@@ -39,6 +39,7 @@ export function toMessageDto(msg: MessageWithExtras, viewerId?: string) {
     type: msg.type.toLowerCase(),
     text: deleted ? null : msg.text,
     attachment: deleted ? null : (msg.attachment ?? null),
+    preview: deleted ? null : (msg.preview ?? null),
     client_id: msg.clientId,
     status: msg.status.toLowerCase(),
     deleted_for_everyone_at: msg.deletedForEveryoneAt?.toISOString() ?? null,

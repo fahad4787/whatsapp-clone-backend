@@ -119,4 +119,111 @@ describe("media", () => {
     });
     expect(staticGet.statusCode).toBe(200);
   });
+
+  it("sends audio and file messages and lists gallery", async () => {
+    const audioPresign = await app.inject({
+      method: "POST",
+      url: "/api/media/presign",
+      headers: { authorization: `Bearer ${userA.access}` },
+      payload: { content_type: "audio/mp4", filename: "note.m4a" },
+    });
+    expect(audioPresign.statusCode).toBe(200);
+    const audioKey = audioPresign.json().key as string;
+    const audioPut = await app.inject({
+      method: "PUT",
+      url: `/api/media/upload/${encodeURIComponent(audioKey)}`,
+      headers: {
+        authorization: `Bearer ${userA.access}`,
+        "content-type": "audio/mp4",
+      },
+      payload: Buffer.from("voice"),
+    });
+    expect(audioPut.statusCode).toBe(200);
+
+    const voice = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${userA.access}` },
+      payload: {
+        client_id: `aud-${Date.now()}`,
+        attachment: {
+          key: audioKey,
+          url: audioPresign.json().public_url,
+          mime: "audio/mp4",
+          size: 5,
+          duration: 4,
+          name: "note.m4a",
+        },
+      },
+    });
+    expect(voice.statusCode).toBe(201);
+    expect(voice.json().type).toBe("audio");
+
+    const pdfPresign = await app.inject({
+      method: "POST",
+      url: "/api/media/presign",
+      headers: { authorization: `Bearer ${userA.access}` },
+      payload: { content_type: "application/pdf", filename: "doc.pdf" },
+    });
+    const pdfKey = pdfPresign.json().key as string;
+    await app.inject({
+      method: "PUT",
+      url: `/api/media/upload/${encodeURIComponent(pdfKey)}`,
+      headers: {
+        authorization: `Bearer ${userA.access}`,
+        "content-type": "application/pdf",
+      },
+      payload: Buffer.from("%PDF-1.4"),
+    });
+    const doc = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${userA.access}` },
+      payload: {
+        client_id: `file-${Date.now()}`,
+        attachment: {
+          key: pdfKey,
+          url: pdfPresign.json().public_url,
+          mime: "application/pdf",
+          size: 8,
+          name: "doc.pdf",
+        },
+      },
+    });
+    expect(doc.statusCode).toBe(201);
+    expect(doc.json().type).toBe("file");
+
+    const gallery = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${conversationId}/media`,
+      headers: { authorization: `Bearer ${userB.access}` },
+    });
+    expect(gallery.statusCode).toBe(200);
+    expect(gallery.json().items.length).toBeGreaterThanOrEqual(2);
+
+    const counts = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${conversationId}/media/counts`,
+      headers: { authorization: `Bearer ${userB.access}` },
+    });
+    expect(counts.statusCode).toBe(200);
+    expect(counts.json().audio).toBeGreaterThanOrEqual(1);
+    expect(counts.json().docs).toBeGreaterThanOrEqual(1);
+  });
+
+  it("unfurls a link preview on text send", async () => {
+    const send = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${userA.access}` },
+      payload: {
+        text: "Check https://example.com please",
+        client_id: `link-${Date.now()}`,
+      },
+    });
+    expect(send.statusCode).toBe(201);
+    expect(send.json().type).toBe("text");
+    const preview = send.json().preview as { url?: string; site?: string } | null;
+    expect(preview?.url).toContain("example.com");
+  });
 });

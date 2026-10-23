@@ -139,6 +139,9 @@ model Conversation {
 enum MessageType {
   TEXT
   IMAGE
+  AUDIO
+  FILE
+  VIDEO
 }
 
 enum MessageStatus {
@@ -156,6 +159,8 @@ model Message {
   text                  String?
   /// AttachmentDto-shaped JSON (url, key, mime, size, …)
   attachment            Json?
+  /// LinkPreviewDto-shaped JSON (url, title, description, …)
+  preview               Json?
   clientId              String?
   status                MessageStatus @default(SENT)
   deletedForEveryoneAt  DateTime?

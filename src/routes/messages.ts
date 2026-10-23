@@ -3,6 +3,8 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { isBlockedEitherWay } from "../blocks.js";
+import { firstUrlInText, unfurlUrl } from "../linkPreview.js";
+import { messageTypeFromMime, previewForType } from "../mediaTypes.js";
 import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { realtimeHub } from "../realtime/hub.js";
@@ -151,6 +153,9 @@ export async function messageRoutes(app: FastifyInstance) {
         name: z.string().max(200).optional(),
         width: z.number().int().nonnegative().optional(),
         height: z.number().int().nonnegative().optional(),
+        duration: z.number().int().nonnegative().optional(),
+        thumbnail_url: z.string().url().max(2000).optional(),
+        thumbnail_key: z.string().max(200).optional(),
       })
       .optional();
 
@@ -214,14 +219,28 @@ export async function messageRoutes(app: FastifyInstance) {
       replyToId = parent.id;
     }
 
-    const isImage = Boolean(parsed.data.attachment);
+    const att = parsed.data.attachment;
+    const msgType = att ? messageTypeFromMime(att.mime) : "TEXT";
+    const fallbackText = att ? previewForType(msgType, att.name) : null;
+    const text = parsed.data.text?.trim() || fallbackText;
+
+    let preview: Prisma.InputJsonValue | undefined;
+    if (msgType === "TEXT" && text) {
+      const url = firstUrlInText(text);
+      if (url) {
+        const card = await unfurlUrl(url);
+        if (card) preview = card;
+      }
+    }
+
     const created = await prisma.message.create({
       data: {
         conversationId: id,
         senderId: userId,
-        type: isImage ? "IMAGE" : "TEXT",
-        text: parsed.data.text?.trim() || (isImage ? "Photo" : null),
-        attachment: parsed.data.attachment ?? undefined,
+        type: msgType,
+        text,
+        attachment: att ?? undefined,
+        preview,
         clientId: parsed.data.client_id,
         status: "SENT",
         replyToId,
@@ -262,18 +281,85 @@ export async function messageRoutes(app: FastifyInstance) {
       void emitReceipt(id, "delivered", [created.id]);
     }
 
-    const preview =
-      created.type === "IMAGE" ? "Photo" : (created.text ?? "New message");
+    const pushPreview = previewForType(
+      created.type === "TEXT" ? "TEXT" : created.type,
+      att?.name,
+    );
     void notifyNewMessage({
       conversationId: id,
       senderId: userId,
-      preview,
+      preview: created.type === "TEXT" ? (created.text ?? pushPreview) : pushPreview,
       messageId: created.id,
     }).catch((err) => {
       req.log.warn({ err }, "push notify failed");
     });
 
     return reply.code(201).send(dto);
+  });
+
+  /** Shared media gallery for a conversation (images / videos / docs / audio). */
+  app.get("/api/conversations/:id/media", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const q = req.query as { type?: string; limit?: string };
+    const member = await assertMember(id, userId);
+    if (!member) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    const typeFilter = (q.type ?? "all").toLowerCase();
+    const types =
+      typeFilter === "images"
+        ? (["IMAGE"] as const)
+        : typeFilter === "videos"
+          ? (["VIDEO"] as const)
+          : typeFilter === "docs" || typeFilter === "documents"
+            ? (["FILE"] as const)
+            : typeFilter === "audio" || typeFilter === "voice"
+              ? (["AUDIO"] as const)
+              : (["IMAGE", "VIDEO", "FILE", "AUDIO"] as const);
+
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 60) || 60));
+    const rows = await prisma.message.findMany({
+      where: {
+        conversationId: id,
+        type: { in: [...types] },
+        deletedForEveryoneAt: null,
+        attachment: { not: Prisma.DbNull },
+        hides: { none: { userId } },
+        ...(member.clearedAt ? { createdAt: { gt: member.clearedAt } } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      include: messageInclude,
+    });
+
+    return {
+      items: rows.map((m) => toMessageDto(m, userId)),
+    };
+  });
+
+  app.get("/api/conversations/:id/media/counts", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const member = await assertMember(id, userId);
+    if (!member) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const base = {
+      conversationId: id,
+      deletedForEveryoneAt: null,
+      attachment: { not: Prisma.DbNull },
+      hides: { none: { userId } },
+      ...(member.clearedAt ? { createdAt: { gt: member.clearedAt } } : {}),
+    };
+    const [images, videos, docs, audio] = await Promise.all([
+      prisma.message.count({ where: { ...base, type: "IMAGE" } }),
+      prisma.message.count({ where: { ...base, type: "VIDEO" } }),
+      prisma.message.count({ where: { ...base, type: "FILE" } }),
+      prisma.message.count({ where: { ...base, type: "AUDIO" } }),
+    ]);
+    return { images, videos, docs, audio, total: images + videos + docs + audio };
   });
 
   app.post("/api/conversations/:id/read", { preHandler: requireUser }, async (req, reply) => {

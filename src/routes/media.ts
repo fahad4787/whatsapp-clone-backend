@@ -5,20 +5,12 @@ import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { extFromMime, isAllowedMime, MAX_UPLOAD_BYTES } from "../mediaTypes.js";
 import { requireUser } from "../plugins/auth.js";
 import { publicUrl } from "../publicUrl.js";
 
 const MEDIA_DIR = path.join(process.cwd(), "uploads", "media");
 mkdirSync(MEDIA_DIR, { recursive: true });
-
-const ALLOWED = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"]);
-
-function extFromMime(mime: string): string {
-  if (mime === "image/png") return "png";
-  if (mime === "image/webp") return "webp";
-  if (mime === "image/gif") return "gif";
-  return "jpg";
-}
 
 /** Flat key owned by userId prefix (no path separators). */
 function safeKey(userId: string, mime: string): string {
@@ -30,8 +22,26 @@ function assertOwnedKey(userId: string, key: string): boolean {
 }
 
 export async function mediaRoutes(app: FastifyInstance) {
-  // Parse image PUT bodies as Buffer
-  for (const mime of ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "application/octet-stream"]) {
+  const binaryMimes = [
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/mpeg",
+    "audio/aac",
+    "audio/ogg",
+    "audio/webm",
+    "audio/wav",
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
+    "application/pdf",
+    "application/octet-stream",
+  ];
+  for (const mime of binaryMimes) {
     app.addContentTypeParser(mime, { parseAs: "buffer" }, (_req, body, done) => {
       done(null, body);
     });
@@ -44,14 +54,14 @@ export async function mediaRoutes(app: FastifyInstance) {
       .object({
         content_type: z.string().min(3).max(100),
         filename: z.string().max(200).optional(),
-        size: z.number().int().positive().max(10 * 1024 * 1024).optional(),
+        size: z.number().int().positive().max(MAX_UPLOAD_BYTES).optional(),
       })
       .safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
     }
     const mime = parsed.data.content_type.toLowerCase();
-    if (!ALLOWED.has(mime) && !mime.startsWith("image/")) {
+    if (!isAllowedMime(mime)) {
       return reply.code(400).send({ error: "unsupported_type" });
     }
     const key = safeKey(userId, mime);
@@ -71,8 +81,11 @@ export async function mediaRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "forbidden_key" });
     }
 
-    const mime = String(req.headers["content-type"] ?? "image/jpeg").split(";")[0].trim().toLowerCase();
-    if (!ALLOWED.has(mime) && !mime.startsWith("image/")) {
+    const mime = String(req.headers["content-type"] ?? "application/octet-stream")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (!isAllowedMime(mime) && mime !== "application/octet-stream") {
       return reply.code(400).send({ error: "unsupported_type" });
     }
 
@@ -80,7 +93,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     if (!Buffer.isBuffer(body) || body.length === 0) {
       return reply.code(400).send({ error: "empty_body" });
     }
-    if (body.length > 10 * 1024 * 1024) {
+    if (body.length > MAX_UPLOAD_BYTES) {
       return reply.code(413).send({ error: "file_too_large" });
     }
 
@@ -109,7 +122,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "file_required" });
     }
     const mime = file.mimetype.toLowerCase();
-    if (!ALLOWED.has(mime) && !mime.startsWith("image/")) {
+    if (!isAllowedMime(mime)) {
       return reply.code(400).send({ error: "unsupported_type" });
     }
 
@@ -132,6 +145,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       url: publicUrl(`/uploads/media/${key}`),
       mime,
       size: Number(file.file.bytesRead ?? 0),
+      name: file.filename || undefined,
     };
   });
 }
