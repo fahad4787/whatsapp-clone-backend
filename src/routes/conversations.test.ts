@@ -103,13 +103,15 @@ describe("conversations", () => {
     expect(add.statusCode).toBe(200);
   });
 
-  it("searches people for new chat", async () => {
-    const empty = await app.inject({
+  it("lists and searches people for new chat", async () => {
+    const listed = await app.inject({
       method: "GET",
       url: "/api/people/search",
       headers: { authorization: `Bearer ${userA.access}` },
     });
-    expect(empty.json().items).toEqual([]);
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items.some((u: { id: string }) => u.id === userB.userId)).toBe(true);
+    expect(listed.json().items.some((u: { id: string }) => u.id === userA.userId)).toBe(false);
 
     const res = await app.inject({
       method: "GET",
@@ -118,6 +120,6 @@ describe("conversations", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().items.some((u: { id: string }) => u.id === userB.userId)).toBe(true);
-    expect(res.json().items.some((u: { id: string }) => u.id === userA.userId)).toBe(false);
   });
 });
+

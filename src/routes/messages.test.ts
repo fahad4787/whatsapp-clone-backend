@@ -89,20 +89,22 @@ describe("messages", () => {
     ]);
   });
 
-  it("people search stays empty without a query", async () => {
-    const empty = await app.inject({
+  it("people list returns others without a query", async () => {
+    const all = await app.inject({
       method: "GET",
       url: "/api/people/search",
       headers: { authorization: `Bearer ${userA.access}` },
     });
-    expect(empty.json().items).toEqual([]);
+    expect(all.statusCode).toBe(200);
+    expect(all.json().items.some((u: { id: string }) => u.id === userB.userId)).toBe(true);
+    expect(all.json().items.some((u: { id: string }) => u.id === userA.userId)).toBe(false);
 
     const hit = await app.inject({
       method: "GET",
-      url: `/api/people/search?q=${encodeURIComponent(userB.userId.slice(0, 0) || "522")}`,
+      url: `/api/people/search?q=${encodeURIComponent("522")}`,
       headers: { authorization: `Bearer ${userA.access}` },
     });
-    // search by phone digits from national prefix used above
     expect(hit.statusCode).toBe(200);
   });
 });
+
