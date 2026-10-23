@@ -11,11 +11,15 @@ import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminOtpRoutes } from "./routes/admin/otps.js";
+import { adminUserRoutes } from "./routes/admin/users.js";
+import { adminReportRoutes } from "./routes/admin/reports.js";
+import { adminMetricsRoutes } from "./routes/admin/metrics.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { messageRoutes } from "./routes/messages.js";
 import { mediaRoutes } from "./routes/media.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { peopleRoutes } from "./routes/people.js";
+import { reportRoutes } from "./routes/reports.js";
 import { wsRoutes } from "./routes/ws.js";
 import { initFcm } from "./push/fcm.js";
 
@@ -57,11 +61,15 @@ export async function buildApp() {
   await app.register(meRoutes);
   await app.register(adminAuthRoutes);
   await app.register(adminOtpRoutes);
+  await app.register(adminUserRoutes);
+  await app.register(adminReportRoutes);
+  await app.register(adminMetricsRoutes);
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
   await app.register(mediaRoutes);
   await app.register(deviceRoutes);
   await app.register(peopleRoutes);
+  await app.register(reportRoutes);
   await app.register(wsRoutes);
 
   initFcm();

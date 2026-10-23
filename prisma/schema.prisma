@@ -32,10 +32,12 @@ model User {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  refreshTokens RefreshToken[]
-  devices       Device[]
-  otpChallenges OtpChallenge[]
-  memberships   ConversationMember[]
+  refreshTokens   RefreshToken[]
+  devices         Device[]
+  otpChallenges   OtpChallenge[]
+  memberships     ConversationMember[]
+  reportsFiled    Report[]             @relation("ReportsFiled")
+  reportsAgainst  Report[]             @relation("ReportsAgainst")
 }
 
 model OtpChallenge {
@@ -161,4 +163,31 @@ model ConversationMember {
 
   @@unique([conversationId, userId])
   @@index([userId])
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+model Report {
+  id                   String       @id @default(cuid())
+  reporterId           String
+  reporter             User         @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUserId         String?
+  targetUser           User?        @relation("ReportsAgainst", fields: [targetUserId], references: [id], onDelete: SetNull)
+  targetConversationId String?
+  reason               String?
+  messageIds           Json?
+  status               ReportStatus @default(OPEN)
+  resolutionNote       String?
+  resolvedAt           DateTime?
+  resolvedByAdminId    String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  @@index([status, createdAt])
+  @@index([reporterId])
+  @@index([targetUserId])
 }

@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { bearerFromHeader, verifyAccessToken, verifyAdminToken } from "../auth/jwt.js";
+import { prisma } from "../db.js";
 
 export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
   const token = bearerFromHeader(req.headers.authorization);
@@ -8,7 +9,17 @@ export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
   }
   try {
     const claims = verifyAccessToken(token);
-    (req as FastifyRequest & { userId: string }).userId = claims.sub;
+    const user = await prisma.user.findUnique({
+      where: { id: claims.sub },
+      select: { id: true, bannedAt: true },
+    });
+    if (!user) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    if (user.bannedAt) {
+      return reply.code(403).send({ error: "banned" });
+    }
+    (req as FastifyRequest & { userId: string }).userId = user.id;
   } catch {
     return reply.code(401).send({ error: "unauthorized" });
   }
