@@ -229,6 +229,9 @@ export function toMessageDto(msg: MessageWithExtras, viewerId?: string) {
   const type = msg.type;
   const payload = hideBody ? null : msg.payload;
 
+  const payloadRec = asRecord(payload);
+  const isSystem = Boolean(payloadRec?.system);
+
   return {
     id: msg.id,
     conversation_id: msg.conversationId,
@@ -237,6 +240,7 @@ export function toMessageDto(msg: MessageWithExtras, viewerId?: string) {
     text: hideBody ? (expired && !deleted ? "This message has disappeared" : null) : msg.text,
     attachment: hideBody ? null : (msg.attachment ?? null),
     preview: hideBody ? null : (msg.preview ?? null),
+    system: isSystem,
     poll: type === "POLL" && payload ? pollToDto(payload, viewerId) : null,
     event: type === "EVENT" && payload ? eventToDto(payload, viewerId) : null,
     contact:

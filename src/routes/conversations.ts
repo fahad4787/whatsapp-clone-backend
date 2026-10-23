@@ -7,9 +7,11 @@ import { z } from "zod";
 import { isBlockedEitherWay } from "../blocks.js";
 import { directKeyFor, toConversationDtoAsync } from "../conversations.js";
 import { prisma } from "../db.js";
+import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { publicUrl } from "../publicUrl.js";
 import { extFromMime } from "../mediaTypes.js";
+import { realtimeHub } from "../realtime/hub.js";
 
 const GROUP_AVATAR_DIR = path.join(process.cwd(), "uploads", "group-avatars");
 
@@ -560,15 +562,52 @@ export async function conversationRoutes(app: FastifyInstance) {
     if (!member) {
       return reply.code(404).send({ error: "not_found" });
     }
+    const seconds = parsed.data.seconds;
     const updated = await prisma.conversation.update({
       where: { id },
       data: {
-        disappearingSeconds: parsed.data.seconds,
+        disappearingSeconds: seconds,
         disappearingSetBy: userId,
         disappearingSetAt: new Date(),
       },
       include: memberInclude,
     });
+
+    const label =
+      seconds === 86_400
+        ? "24 hours"
+        : seconds === 604_800
+          ? "7 days"
+          : seconds === 7_776_000
+            ? "90 days"
+            : null;
+    const noticeText =
+      seconds === 0 || !label
+        ? "Disappearing messages were turned off."
+        : `Disappearing messages are on. New messages will disappear from this chat after ${label}.`;
+    const notice = await prisma.message.create({
+      data: {
+        conversationId: id,
+        senderId: userId,
+        type: "TEXT",
+        text: noticeText,
+        payload: { system: true, kind: "disappearing", seconds },
+        status: "SENT",
+      },
+      include: messageInclude,
+    });
+    const noticeDto = toMessageDto(notice);
+    realtimeHub.toRoom(id, { type: "message", data: noticeDto });
+    void prisma.conversationMember
+      .findMany({ where: { conversationId: id }, select: { userId: true } })
+      .then((peers) => {
+        for (const peer of peers) {
+          if (!realtimeHub.isInRoom(peer.userId, id)) {
+            realtimeHub.toUser(peer.userId, { type: "message", data: noticeDto });
+          }
+        }
+      });
+
     return toConversationDtoAsync(updated, userId);
   });
 }

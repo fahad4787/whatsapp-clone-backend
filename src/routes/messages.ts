@@ -796,9 +796,9 @@ export async function messageRoutes(app: FastifyInstance) {
       data: { payload: { ...payload, options } },
       include: messageInclude,
     });
-    const dto = toMessageDto(updated, userId);
-    broadcastMessage(msg.conversationId, dto);
-    return dto;
+    // Broadcast viewer-neutral DTO so peers don't inherit this voter's `mine` flags.
+    broadcastMessage(msg.conversationId, toMessageDto(updated));
+    return toMessageDto(updated, userId);
   });
 
   app.post("/api/messages/:id/rsvp", { preHandler: requireUser }, async (req, reply) => {
@@ -839,8 +839,7 @@ export async function messageRoutes(app: FastifyInstance) {
       data: { payload: { ...payload, rsvps } },
       include: messageInclude,
     });
-    const dto = toMessageDto(updated, userId);
-    broadcastMessage(msg.conversationId, dto);
-    return dto;
+    broadcastMessage(msg.conversationId, toMessageDto(updated));
+    return toMessageDto(updated, userId);
   });
 }
