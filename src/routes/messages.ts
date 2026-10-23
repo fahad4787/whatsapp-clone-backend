@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db.js";
-import { toMessageDto } from "../messages.js";
+import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { realtimeHub } from "../realtime/hub.js";
 import { notifyNewMessage } from "../push/fcm.js";
@@ -13,6 +13,34 @@ async function assertMember(conversationId: string, userId: string) {
       conversationId_userId: { conversationId, userId },
     },
   });
+}
+
+async function loadMessageDto(id: string, viewerId: string) {
+  const msg = await prisma.message.findUnique({
+    where: { id },
+    include: messageInclude,
+  });
+  if (!msg) return null;
+  return toMessageDto(msg, viewerId);
+}
+
+function broadcastMessage(conversationId: string, dto: ReturnType<typeof toMessageDto>, exceptUserId?: string) {
+  realtimeHub.toRoom(conversationId, { type: "message", data: dto });
+  void prisma.conversationMember
+    .findMany({
+      where: {
+        conversationId,
+        ...(exceptUserId ? { userId: { not: exceptUserId } } : {}),
+      },
+      select: { userId: true },
+    })
+    .then((peers) => {
+      for (const peer of peers) {
+        if (!realtimeHub.isInRoom(peer.userId, conversationId)) {
+          realtimeHub.toUser(peer.userId, { type: "message", data: dto });
+        }
+      }
+    });
 }
 
 async function emitReceipt(
@@ -65,6 +93,7 @@ export async function messageRoutes(app: FastifyInstance) {
       },
       orderBy: { createdAt: "asc" },
       take: limit,
+      include: messageInclude,
     });
 
     const toDeliver = await prisma.message.findMany({
@@ -88,7 +117,7 @@ export async function messageRoutes(app: FastifyInstance) {
       );
     }
 
-    return { items: rows.map(toMessageDto) };
+    return { items: rows.map((m) => toMessageDto(m, userId)) };
   });
 
   app.post("/api/conversations/:id/messages", { preHandler: requireUser }, async (req, reply) => {
@@ -111,6 +140,10 @@ export async function messageRoutes(app: FastifyInstance) {
         text: z.string().trim().max(4000).optional(),
         client_id: z.string().min(1).max(80).optional(),
         attachment: attachmentSchema,
+        reply_to: z
+          .object({ id: z.string().min(1) })
+          .optional()
+          .nullable(),
       })
       .refine((b) => (b.text && b.text.length > 0) || b.attachment, {
         message: "text_or_attachment_required",
@@ -133,14 +166,26 @@ export async function messageRoutes(app: FastifyInstance) {
             clientId: parsed.data.client_id,
           },
         },
+        include: messageInclude,
       });
       if (existing) {
-        return toMessageDto(existing);
+        return toMessageDto(existing, userId);
       }
     }
 
+    let replyToId: string | undefined;
+    if (parsed.data.reply_to?.id) {
+      const parent = await prisma.message.findFirst({
+        where: { id: parsed.data.reply_to.id, conversationId: id },
+      });
+      if (!parent) {
+        return reply.code(400).send({ error: "invalid_reply_to" });
+      }
+      replyToId = parent.id;
+    }
+
     const isImage = Boolean(parsed.data.attachment);
-    let msg = await prisma.message.create({
+    const created = await prisma.message.create({
       data: {
         conversationId: id,
         senderId: userId,
@@ -149,6 +194,7 @@ export async function messageRoutes(app: FastifyInstance) {
         attachment: parsed.data.attachment ?? undefined,
         clientId: parsed.data.client_id,
         status: "SENT",
+        replyToId,
       },
     });
 
@@ -164,15 +210,18 @@ export async function messageRoutes(app: FastifyInstance) {
     });
     const anyPeerOnline = peers.some((p) => realtimeHub.isOnline(p.userId));
     if (anyPeerOnline) {
-      msg = await prisma.message.update({
-        where: { id: msg.id },
+      await prisma.message.update({
+        where: { id: created.id },
         data: { status: "DELIVERED" },
       });
     }
 
-    const dto = toMessageDto(msg);
+    const dto = await loadMessageDto(created.id, userId);
+    if (!dto) {
+      return reply.code(500).send({ error: "create_failed" });
+    }
+    // Sender is in room when composing — notify room + offline peers.
     realtimeHub.toRoom(id, { type: "message", data: dto });
-
     for (const peer of peers) {
       if (!realtimeHub.isInRoom(peer.userId, id)) {
         realtimeHub.toUser(peer.userId, { type: "message", data: dto });
@@ -180,16 +229,16 @@ export async function messageRoutes(app: FastifyInstance) {
     }
 
     if (anyPeerOnline) {
-      void emitReceipt(id, "delivered", [msg.id]);
+      void emitReceipt(id, "delivered", [created.id]);
     }
 
     const preview =
-      msg.type === "IMAGE" ? "Photo" : (msg.text ?? "New message");
+      created.type === "IMAGE" ? "Photo" : (created.text ?? "New message");
     void notifyNewMessage({
       conversationId: id,
       senderId: userId,
       preview,
-      messageId: msg.id,
+      messageId: created.id,
     }).catch((err) => {
       req.log.warn({ err }, "push notify failed");
     });
@@ -297,7 +346,7 @@ export async function messageRoutes(app: FastifyInstance) {
       if (msg.senderId !== userId) {
         return reply.code(403).send({ error: "forbidden" });
       }
-      const updated = await prisma.message.update({
+      await prisma.message.update({
         where: { id },
         data: {
           deletedForEveryoneAt: new Date(),
@@ -305,9 +354,11 @@ export async function messageRoutes(app: FastifyInstance) {
           attachment: Prisma.DbNull,
         },
       });
-      const dto = toMessageDto(updated);
+      const dto = await loadMessageDto(id, userId);
+      if (!dto) {
+        return reply.code(404).send({ error: "not_found" });
+      }
       realtimeHub.toRoom(msg.conversationId, { type: "message_deleted", data: dto });
-      // Also push as message update for clients that only listen for message.
       realtimeHub.toRoom(msg.conversationId, { type: "message", data: dto });
       return dto;
     }
@@ -334,5 +385,144 @@ export async function messageRoutes(app: FastifyInstance) {
     });
 
     return { ok: true };
+  });
+
+  app.post("/api/messages/:id/reactions", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({ emoji: z.string().trim().min(1).max(16) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg || msg.deletedForEveryoneAt) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    const existing = await prisma.messageReaction.findUnique({
+      where: { messageId_userId: { messageId: id, userId } },
+    });
+    if (existing && existing.emoji === parsed.data.emoji) {
+      await prisma.messageReaction.delete({ where: { id: existing.id } });
+    } else {
+      await prisma.messageReaction.upsert({
+        where: { messageId_userId: { messageId: id, userId } },
+        create: { messageId: id, userId, emoji: parsed.data.emoji },
+        update: { emoji: parsed.data.emoji },
+      });
+    }
+
+    const dto = await loadMessageDto(id, userId);
+    if (!dto) return reply.code(404).send({ error: "not_found" });
+    broadcastMessage(msg.conversationId, dto);
+    return dto;
+  });
+
+  app.post("/api/messages/:id/star", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg) return reply.code(404).send({ error: "not_found" });
+    if (!(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    await prisma.messageStar.upsert({
+      where: { messageId_userId: { messageId: id, userId } },
+      create: { messageId: id, userId },
+      update: {},
+    });
+    const dto = await loadMessageDto(id, userId);
+    return dto ?? reply.code(404).send({ error: "not_found" });
+  });
+
+  app.delete("/api/messages/:id/star", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    await prisma.messageStar.deleteMany({ where: { messageId: id, userId } });
+    const dto = await loadMessageDto(id, userId);
+    return dto ?? { ok: true };
+  });
+
+  app.get("/api/me/starred", { preHandler: requireUser }, async (req) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const stars = await prisma.messageStar.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: {
+        message: { include: messageInclude },
+      },
+    });
+    return {
+      items: stars
+        .filter((s) => !s.message.deletedForEveryoneAt)
+        .map((s) => ({
+          ...toMessageDto(s.message, userId),
+          conversation_id: s.message.conversationId,
+          starred_at: s.createdAt.toISOString(),
+        })),
+    };
+  });
+
+  app.post("/api/messages/:id/forward", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({ conversation_id: z.string().min(1) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+
+    const source = await prisma.message.findUnique({ where: { id } });
+    if (!source || source.deletedForEveryoneAt) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!(await assertMember(source.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const targetId = parsed.data.conversation_id;
+    if (!(await assertMember(targetId, userId))) {
+      return reply.code(404).send({ error: "target_not_found" });
+    }
+
+    const created = await prisma.message.create({
+      data: {
+        conversationId: targetId,
+        senderId: userId,
+        type: source.type,
+        text: source.text,
+        attachment: source.attachment ?? undefined,
+        status: "SENT",
+        forwarded: true,
+      },
+    });
+    await prisma.conversation.update({
+      where: { id: targetId },
+      data: { updatedAt: new Date() },
+    });
+
+    const dto = await loadMessageDto(created.id, userId);
+    if (!dto) return reply.code(500).send({ error: "forward_failed" });
+    broadcastMessage(targetId, dto, userId);
+    realtimeHub.toRoom(targetId, { type: "message", data: dto });
+
+    const preview =
+      created.type === "IMAGE" ? "Photo" : (created.text ?? "Forwarded message");
+    void notifyNewMessage({
+      conversationId: targetId,
+      senderId: userId,
+      preview,
+      messageId: created.id,
+    }).catch(() => {});
+
+    return reply.code(201).send(dto);
   });
 }

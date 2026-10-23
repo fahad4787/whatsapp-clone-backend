@@ -144,14 +144,21 @@ model Message {
   clientId              String?
   status                MessageStatus @default(SENT)
   deletedForEveryoneAt  DateTime?
+  replyToId             String?
+  replyTo               Message?      @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies               Message[]     @relation("MessageReplies")
+  forwarded             Boolean       @default(false)
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
-  hides MessageHide[]
+  hides     MessageHide[]
+  stars     MessageStar[]
+  reactions MessageReaction[]
 
   @@unique([conversationId, clientId])
   @@index([conversationId, createdAt])
   @@index([senderId])
+  @@index([replyToId])
 }
 
 /// Per-user "delete for me" (message hidden only for this user).
@@ -164,6 +171,30 @@ model MessageHide {
 
   @@unique([messageId, userId])
   @@index([userId])
+}
+
+model MessageStar {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([userId, createdAt])
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([messageId, userId])
+  @@index([messageId])
 }
 
 model ConversationMember {
