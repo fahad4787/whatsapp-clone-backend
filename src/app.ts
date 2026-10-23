@@ -20,6 +20,7 @@ import { mediaRoutes } from "./routes/media.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { peopleRoutes } from "./routes/people.js";
 import { reportRoutes } from "./routes/reports.js";
+import { blockRoutes } from "./routes/blocks.js";
 import { wsRoutes } from "./routes/ws.js";
 import { initFcm } from "./push/fcm.js";
 
@@ -71,6 +72,7 @@ export async function buildApp() {
   await app.register(deviceRoutes);
   await app.register(peopleRoutes);
   await app.register(reportRoutes);
+  await app.register(blockRoutes);
   await app.register(wsRoutes);
 
   initFcm();

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db.js";
+import { isBlockedEitherWay } from "../blocks.js";
 import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { realtimeHub } from "../realtime/hub.js";
@@ -76,7 +77,8 @@ export async function messageRoutes(app: FastifyInstance) {
   app.get("/api/conversations/:id/messages", { preHandler: requireUser }, async (req, reply) => {
     const userId = (req as typeof req & { userId: string }).userId;
     const { id } = req.params as { id: string };
-    const q = req.query as { limit?: string; before?: string };
+    const q = req.query as { limit?: string; before?: string; q?: string };
+    const search = q.q?.trim();
     const limit = Math.min(100, Math.max(1, Number(q.limit ?? 50) || 50));
 
     const member = await assertMember(id, userId);
@@ -88,10 +90,14 @@ export async function messageRoutes(app: FastifyInstance) {
       where: {
         conversationId: id,
         hides: { none: { userId } },
+        deletedForEveryoneAt: search ? null : undefined,
         ...(member.clearedAt ? { createdAt: { gt: member.clearedAt } } : {}),
         ...(q.before ? { createdAt: { lt: new Date(q.before) } } : {}),
+        ...(search
+          ? { text: { contains: search, mode: "insensitive" as const } }
+          : {}),
       },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: search ? "desc" : "asc" },
       take: limit,
       include: messageInclude,
     });
@@ -156,6 +162,17 @@ export async function messageRoutes(app: FastifyInstance) {
     const member = await assertMember(id, userId);
     if (!member) {
       return reply.code(404).send({ error: "not_found" });
+    }
+
+    const conv = await prisma.conversation.findUnique({
+      where: { id },
+      include: { members: { select: { userId: true } } },
+    });
+    if (conv?.type === "DIRECT") {
+      const peerId = conv.members.find((m) => m.userId !== userId)?.userId;
+      if (peerId && (await isBlockedEitherWay(userId, peerId))) {
+        return reply.code(403).send({ error: "blocked" });
+      }
     }
 
     if (parsed.data.client_id) {

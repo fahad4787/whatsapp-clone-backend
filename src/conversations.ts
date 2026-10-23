@@ -40,7 +40,8 @@ export function toConversationDto(
     last_message_at: last?.createdAt.toISOString() ?? null,
     unread_count: unreadCount,
     archived: me?.archived ?? false,
-    pinned: false,
+    pinned: Boolean(me?.pinnedAt),
+    muted_until: me?.mutedUntil?.toISOString() ?? null,
     my_role: me?.role === "ADMIN" ? "admin" : "member",
     peer: peer
       ? {

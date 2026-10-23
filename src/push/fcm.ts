@@ -44,15 +44,17 @@ export async function notifyNewMessage(opts: {
   preview: string;
   messageId: string;
 }) {
+  const now = new Date();
   const members = await prisma.conversationMember.findMany({
     where: {
       conversationId: opts.conversationId,
       userId: { not: opts.senderId },
     },
-    select: { userId: true },
+    select: { userId: true, mutedUntil: true },
   });
-  // Push unless they currently have that chat open (home / other screens still get notify).
+  // Push unless chat is open or muted for this member.
   const notifyUserIds = members
+    .filter((m) => !m.mutedUntil || m.mutedUntil.getTime() <= now.getTime())
     .map((m) => m.userId)
     .filter((id) => !realtimeHub.isInRoom(id, opts.conversationId));
   if (notifyUserIds.length === 0) return;

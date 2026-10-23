@@ -38,6 +38,21 @@ model User {
   memberships     ConversationMember[]
   reportsFiled    Report[]             @relation("ReportsFiled")
   reportsAgainst  Report[]             @relation("ReportsAgainst")
+  blocksCreated   Block[]              @relation("BlocksCreated")
+  blocksReceived  Block[]              @relation("BlocksReceived")
+}
+
+model Block {
+  id        String   @id @default(cuid())
+  blockerId String
+  blocker   User     @relation("BlocksCreated", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedId String
+  blocked   User     @relation("BlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
 }
 
 model OtpChallenge {
@@ -206,11 +221,14 @@ model ConversationMember {
   role           MemberRole   @default(MEMBER)
   joinedAt       DateTime     @default(now())
   archived       Boolean      @default(false)
+  mutedUntil     DateTime?
+  pinnedAt       DateTime?
   /// "Clear chat" for me — hide messages at or before this time.
   clearedAt      DateTime?
 
   @@unique([conversationId, userId])
   @@index([userId])
+  @@index([userId, pinnedAt])
 }
 
 enum ReportStatus {

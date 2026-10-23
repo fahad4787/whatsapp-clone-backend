@@ -94,7 +94,16 @@ export async function reportRoutes(app: FastifyInstance) {
       },
     });
 
-    // `block` is accepted for client compatibility; contact-block storage is later.
+    if (parsed.data.block && targetUserId) {
+      await prisma.block.upsert({
+        where: {
+          blockerId_blockedId: { blockerId: userId, blockedId: targetUserId },
+        },
+        create: { blockerId: userId, blockedId: targetUserId },
+        update: {},
+      });
+    }
+
     return reply.code(201).send(toReportDto(report));
   });
 }

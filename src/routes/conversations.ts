@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { isBlockedEitherWay } from "../blocks.js";
 import { directKeyFor, toConversationDto } from "../conversations.js";
 import { prisma } from "../db.js";
 import { requireUser } from "../plugins/auth.js";
@@ -16,6 +17,8 @@ async function loadConversation(id: string) {
   });
 }
 
+const PIN_MAX = 3;
+
 export async function conversationRoutes(app: FastifyInstance) {
   app.get("/api/conversations", { preHandler: requireUser }, async (req) => {
     const userId = (req as typeof req & { userId: string }).userId;
@@ -24,7 +27,10 @@ export async function conversationRoutes(app: FastifyInstance) {
       include: {
         conversation: { include: memberInclude },
       },
-      orderBy: { conversation: { updatedAt: "desc" } },
+      orderBy: [
+        { pinnedAt: "desc" },
+        { conversation: { updatedAt: "desc" } },
+      ],
     });
 
     const items = await Promise.all(
@@ -42,6 +48,13 @@ export async function conversationRoutes(app: FastifyInstance) {
         return toConversationDto(m.conversation, userId, unread);
       }),
     );
+    // Pinned first (nulls last), then recency — mirrors WhatsApp home.
+    items.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      const ta = a.updated_at ?? "";
+      const tb = b.updated_at ?? "";
+      return tb.localeCompare(ta);
+    });
     return { items };
   });
 
@@ -80,6 +93,9 @@ export async function conversationRoutes(app: FastifyInstance) {
     const peer = await prisma.user.findUnique({ where: { id: peerId } });
     if (!peer || peer.bannedAt) {
       return reply.code(404).send({ error: "user_not_found" });
+    }
+    if (await isBlockedEitherWay(userId, peerId)) {
+      return reply.code(403).send({ error: "blocked" });
     }
 
     const key = directKeyFor(userId, peerId);
@@ -194,5 +210,74 @@ export async function conversationRoutes(app: FastifyInstance) {
 
     const updated = await loadConversation(id);
     return toConversationDto(updated!, userId);
+  });
+
+  app.put("/api/conversations/:id/settings", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        archived: z.boolean().optional(),
+        pinned: z.boolean().optional(),
+        muted: z.boolean().optional(),
+        muted_until: z.string().datetime().nullable().optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    if (
+      parsed.data.archived === undefined &&
+      parsed.data.pinned === undefined &&
+      parsed.data.muted === undefined &&
+      parsed.data.muted_until === undefined
+    ) {
+      return reply.code(400).send({ error: "empty_settings" });
+    }
+
+    const member = await prisma.conversationMember.findUnique({
+      where: { conversationId_userId: { conversationId: id, userId } },
+    });
+    if (!member) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    const data: {
+      archived?: boolean;
+      pinnedAt?: Date | null;
+      mutedUntil?: Date | null;
+    } = {};
+
+    if (parsed.data.archived !== undefined) {
+      data.archived = parsed.data.archived;
+    }
+    if (parsed.data.muted_until !== undefined) {
+      data.mutedUntil = parsed.data.muted_until ? new Date(parsed.data.muted_until) : null;
+    } else if (parsed.data.muted === true) {
+      data.mutedUntil = new Date(Date.now() + 8 * 3600_000);
+    } else if (parsed.data.muted === false) {
+      data.mutedUntil = null;
+    }
+    if (parsed.data.pinned !== undefined) {
+      if (parsed.data.pinned) {
+        const pinnedCount = await prisma.conversationMember.count({
+          where: { userId, pinnedAt: { not: null }, NOT: { conversationId: id } },
+        });
+        if (pinnedCount >= PIN_MAX) {
+          return reply.code(400).send({ error: "pin_limit", max: PIN_MAX });
+        }
+        data.pinnedAt = new Date();
+      } else {
+        data.pinnedAt = null;
+      }
+    }
+
+    await prisma.conversationMember.update({
+      where: { id: member.id },
+      data,
+    });
+
+    const conv = await loadConversation(id);
+    return toConversationDto(conv!, userId);
   });
 }
