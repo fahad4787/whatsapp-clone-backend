@@ -76,12 +76,21 @@ export async function wsRoutes(app: FastifyInstance) {
               type: "presence",
               data: {
                 user_id: userId,
+                conversation_id: parsed.data.conversation_id,
                 online: true,
                 last_seen_at: null,
               },
             },
             userId,
           );
+          // Snapshot of who is already in this chat (so Online isn't stuck forever).
+          realtimeHub.send(socket, {
+            type: "presence_snapshot",
+            data: {
+              conversation_id: parsed.data.conversation_id,
+              online_user_ids: realtimeHub.onlineUserIdsInRoom(parsed.data.conversation_id),
+            },
+          });
           realtimeHub.send(socket, {
             type: "joined",
             data: { conversation_id: parsed.data.conversation_id },
@@ -94,7 +103,20 @@ export async function wsRoutes(app: FastifyInstance) {
             .object({ conversation_id: z.string().min(1) })
             .safeParse(frame.data);
           if (!parsed.success) return;
-          realtimeHub.leaveRoom(socket, parsed.data.conversation_id);
+          const conversationId = parsed.data.conversation_id;
+          realtimeHub.leaveRoom(socket, conversationId);
+          // If this user has no other socket still in the room, tell peers they left.
+          if (!realtimeHub.isInRoom(userId, conversationId)) {
+            realtimeHub.toRoom(conversationId, {
+              type: "presence",
+              data: {
+                user_id: userId,
+                conversation_id: conversationId,
+                online: false,
+                last_seen_at: new Date().toISOString(),
+              },
+            });
+          }
           return;
         }
 
@@ -134,6 +156,7 @@ export async function wsRoutes(app: FastifyInstance) {
           type: "presence",
           data: {
             user_id: userId,
+            conversation_id: conversationId,
             online: false,
             last_seen_at: new Date().toISOString(),
           },

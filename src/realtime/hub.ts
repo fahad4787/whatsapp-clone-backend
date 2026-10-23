@@ -62,6 +62,18 @@ class RealtimeHub {
     return false;
   }
 
+  /** Distinct user ids currently joined to a conversation room. */
+  onlineUserIdsInRoom(conversationId: string): string[] {
+    const room = this.rooms.get(conversationId);
+    if (!room) return [];
+    const ids = new Set<string>();
+    for (const socket of room) {
+      const uid = this.userId(socket);
+      if (uid) ids.add(uid);
+    }
+    return [...ids];
+  }
+
   joinRoom(socket: WebSocket, conversationId: string) {
     const info = this.meta.get(socket);
     if (!info) return;
