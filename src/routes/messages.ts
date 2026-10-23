@@ -88,21 +88,26 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found" });
     }
 
-    const rows = await prisma.message.findMany({
+    // Latest page by default; `before` (ISO createdAt) loads older. Always return asc for UI.
+    const createdAtFilter: { gt?: Date; lt?: Date } = {};
+    if (member.clearedAt) createdAtFilter.gt = member.clearedAt;
+    if (q.before) createdAtFilter.lt = new Date(q.before);
+
+    const rowsRaw = await prisma.message.findMany({
       where: {
         conversationId: id,
         hides: { none: { userId } },
         deletedForEveryoneAt: search ? null : undefined,
-        ...(member.clearedAt ? { createdAt: { gt: member.clearedAt } } : {}),
-        ...(q.before ? { createdAt: { lt: new Date(q.before) } } : {}),
+        ...(Object.keys(createdAtFilter).length ? { createdAt: createdAtFilter } : {}),
         ...(search
           ? { text: { contains: search, mode: "insensitive" as const } }
           : {}),
       },
-      orderBy: { createdAt: search ? "desc" : "asc" },
+      orderBy: { createdAt: "desc" },
       take: limit,
       include: messageInclude,
     });
+    const rows = search ? rowsRaw : rowsRaw.slice().reverse();
 
     const convMeta = await prisma.conversation.findUnique({
       where: { id },
