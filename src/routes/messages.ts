@@ -226,7 +226,8 @@ export async function messageRoutes(app: FastifyInstance) {
       );
     }
 
-    return reply.code(204).send();
+    // 200 + JSON so Android Retrofit (ResponseBody) does not fail on empty 204.
+    return { ok: true, updated: toRead.length };
   });
 
   app.post("/api/messages/delivered", { preHandler: requireUser }, async (req, reply) => {
@@ -316,7 +317,7 @@ export async function messageRoutes(app: FastifyInstance) {
       create: { messageId: id, userId },
       update: {},
     });
-    return reply.code(204).send();
+    return { ok: true };
   });
 
   app.post("/api/conversations/:id/clear", { preHandler: requireUser }, async (req, reply) => {
@@ -332,6 +333,6 @@ export async function messageRoutes(app: FastifyInstance) {
       data: { clearedAt: new Date() },
     });
 
-    return reply.code(204).send();
+    return { ok: true };
   });
 }

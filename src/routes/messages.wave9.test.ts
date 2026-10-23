@@ -77,7 +77,8 @@ describe("Wave 9 receipts + delete", () => {
       headers: { authorization: `Bearer ${userB.access}` },
       payload: {},
     });
-    expect(read.statusCode).toBe(204);
+    expect(read.statusCode).toBe(200);
+    expect(read.json().ok).toBe(true);
     const afterRead = await prisma.message.findUniqueOrThrow({ where: { id: messageId } });
     expect(afterRead.status).toBe("READ");
   });
@@ -96,7 +97,7 @@ describe("Wave 9 receipts + delete", () => {
       url: `/api/messages/${messageId}?for=me`,
       headers: { authorization: `Bearer ${userA.access}` },
     });
-    expect(hide.statusCode).toBe(204);
+    expect(hide.statusCode).toBe(200);
 
     const listA = await app.inject({
       method: "GET",
@@ -135,7 +136,8 @@ describe("Wave 9 receipts + delete", () => {
       headers: { authorization: `Bearer ${userB.access}` },
       payload: {},
     });
-    expect(clear.statusCode).toBe(204);
+    expect(clear.statusCode).toBe(200);
+    expect(clear.json().ok).toBe(true);
 
     const listBAfterClear = await app.inject({
       method: "GET",
