@@ -56,6 +56,45 @@ export async function meRoutes(app: FastifyInstance) {
     return toUserDto(user);
   });
 
+  app.get("/api/me/privacy", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return reply.code(404).send({ error: "not_found" });
+    return {
+      last_seen: user.lastSeenPrivacy,
+      online: user.onlinePrivacy,
+    };
+  });
+
+  app.put("/api/me/privacy", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const parsed = z
+      .object({
+        last_seen: z.enum(["everyone", "contacts", "nobody"]).optional(),
+        online: z.enum(["everyone", "same_as_last_seen", "nobody"]).optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    if (parsed.data.last_seen === undefined && parsed.data.online === undefined) {
+      return reply.code(400).send({ error: "empty_privacy" });
+    }
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(parsed.data.last_seen !== undefined
+          ? { lastSeenPrivacy: parsed.data.last_seen }
+          : {}),
+        ...(parsed.data.online !== undefined ? { onlinePrivacy: parsed.data.online } : {}),
+      },
+    });
+    return {
+      last_seen: user.lastSeenPrivacy,
+      online: user.onlinePrivacy,
+    };
+  });
+
   app.post("/api/me/avatar", { preHandler: requireUser }, async (req, reply) => {
     const userId = (req as typeof req & { userId: string }).userId;
     const file = await req.file();

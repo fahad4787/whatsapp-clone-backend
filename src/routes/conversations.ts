@@ -540,4 +540,35 @@ export async function conversationRoutes(app: FastifyInstance) {
     await prisma.conversation.delete({ where: { id } });
     return { ok: true, id };
   });
+
+  app.put("/api/conversations/:id/disappearing", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        seconds: z.number().int().refine((n) => [0, 86400, 604800, 7776000].includes(n), {
+          message: "invalid_ttl",
+        }),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const member = await prisma.conversationMember.findUnique({
+      where: { conversationId_userId: { conversationId: id, userId } },
+    });
+    if (!member) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const updated = await prisma.conversation.update({
+      where: { id },
+      data: {
+        disappearingSeconds: parsed.data.seconds,
+        disappearingSetBy: userId,
+        disappearingSetAt: new Date(),
+      },
+      include: memberInclude,
+    });
+    return toConversationDtoAsync(updated, userId);
+  });
 }

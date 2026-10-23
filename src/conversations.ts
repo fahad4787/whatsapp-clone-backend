@@ -73,6 +73,9 @@ export function toConversationDto(
     my_role: me?.role === "ADMIN" ? "admin" : "member",
     only_admins_can_send: conv.onlyAdminsCanSend ?? false,
     only_admins_can_edit_info: conv.onlyAdminsCanEditInfo ?? false,
+    disappearing_seconds: conv.disappearingSeconds ?? 0,
+    disappearing_set_by: conv.disappearingSetBy ?? null,
+    disappearing_set_at: conv.disappearingSetAt?.toISOString() ?? null,
     peer: peer
       ? {
           id: peer.id,
@@ -82,8 +85,8 @@ export function toConversationDto(
           about: peer.about,
           avatar_url: peer.avatarUrl,
           avatar_thumb: peer.avatarUrl,
-          // Hide last-seen style signals when either side is blocked.
-          last_seen_at: blocked ? null : undefined,
+          last_seen_at: null as string | null,
+          presence_visible: true,
         }
       : null,
     members: conv.members.map((m) => ({
@@ -104,5 +107,23 @@ export async function toConversationDtoAsync(
       ? conv.members.find((m) => m.userId !== viewerId)?.userId
       : undefined;
   const flags = await blockFlagsForDirect(viewerId, peerId);
-  return toConversationDto(conv, viewerId, unreadCount, flags);
+  const dto = toConversationDto(conv, viewerId, unreadCount, flags);
+  if (dto.peer && peerId && !flags.blocked_by_me && !flags.blocked_me) {
+    const { canSeePresence } = await import("./privacy.js");
+    const [allowLastSeen, allowOnline] = await Promise.all([
+      canSeePresence(viewerId, peerId, "last_seen"),
+      canSeePresence(viewerId, peerId, "online"),
+    ]);
+    dto.peer.presence_visible = allowOnline;
+    if (allowLastSeen) {
+      const peerUser = conv.members.find((m) => m.userId === peerId)?.user;
+      dto.peer.last_seen_at = peerUser?.lastSeenAt?.toISOString() ?? null;
+    } else {
+      dto.peer.last_seen_at = null;
+    }
+  } else if (dto.peer && (flags.blocked_by_me || flags.blocked_me)) {
+    dto.peer.presence_visible = false;
+    dto.peer.last_seen_at = null;
+  }
+  return dto;
 }

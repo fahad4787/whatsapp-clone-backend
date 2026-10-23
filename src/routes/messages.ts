@@ -5,10 +5,19 @@ import { prisma } from "../db.js";
 import { isBlockedEitherWay } from "../blocks.js";
 import { firstUrlInText, unfurlUrl } from "../linkPreview.js";
 import { messageTypeFromMime, previewForType } from "../mediaTypes.js";
-import { messageInclude, toMessageDto } from "../messages.js";
+import {
+  buildContactPayload,
+  buildEventPayload,
+  buildLocationPayload,
+  buildPollPayload,
+  messageInclude,
+  previewForRichType,
+  toMessageDto,
+} from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { realtimeHub } from "../realtime/hub.js";
 import { notifyNewMessage } from "../push/fcm.js";
+import type { MessageType } from "@prisma/client";
 
 async function assertMember(conversationId: string, userId: string) {
   return prisma.conversationMember.findUnique({
@@ -98,6 +107,7 @@ export async function messageRoutes(app: FastifyInstance) {
         conversationId: id,
         hides: { none: { userId } },
         deletedForEveryoneAt: search ? null : undefined,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
         ...(Object.keys(createdAtFilter).length ? { createdAt: createdAtFilter } : {}),
         ...(search
           ? { text: { contains: search, mode: "insensitive" as const } }
@@ -173,10 +183,50 @@ export async function messageRoutes(app: FastifyInstance) {
           .object({ id: z.string().min(1) })
           .optional()
           .nullable(),
+        contact: z
+          .object({
+            name: z.string().trim().min(1).max(80),
+            phones: z.array(z.string().min(1).max(40)).default([]),
+            user_id: z.string().min(1).optional().nullable(),
+          })
+          .optional(),
+        location: z
+          .object({
+            lat: z.number().min(-90).max(90),
+            lng: z.number().min(-180).max(180),
+            address: z.string().trim().max(200).optional().nullable(),
+            name: z.string().trim().max(120).optional().nullable(),
+          })
+          .optional(),
+        poll: z
+          .object({
+            question: z.string().trim().min(1).max(200),
+            options: z.array(z.string().trim().min(1).max(80)).min(2).max(12),
+            multiple: z.boolean().optional(),
+          })
+          .optional(),
+        event: z
+          .object({
+            title: z.string().trim().min(1).max(120),
+            description: z.string().trim().max(1000).optional().nullable(),
+            location: z.string().trim().max(200).optional().nullable(),
+            starts_at: z.string().min(1),
+            ends_at: z.string().optional().nullable(),
+            timezone: z.string().max(64).optional().nullable(),
+            with_call: z.boolean().optional(),
+          })
+          .optional(),
       })
-      .refine((b) => (b.text && b.text.length > 0) || b.attachment, {
-        message: "text_or_attachment_required",
-      })
+      .refine(
+        (b) =>
+          (b.text && b.text.length > 0) ||
+          b.attachment ||
+          b.contact ||
+          b.location ||
+          b.poll ||
+          b.event,
+        { message: "message_required" },
+      )
       .safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
@@ -228,9 +278,29 @@ export async function messageRoutes(app: FastifyInstance) {
     }
 
     const att = parsed.data.attachment;
-    const msgType = att ? messageTypeFromMime(att.mime) : "TEXT";
-    const fallbackText = att ? previewForType(msgType, att.name) : null;
-    const text = parsed.data.text?.trim() || fallbackText;
+    let msgType: MessageType = att ? messageTypeFromMime(att.mime) : "TEXT";
+    let payload: Prisma.InputJsonValue | undefined;
+    let text = parsed.data.text?.trim() || null;
+
+    if (parsed.data.contact) {
+      msgType = "CONTACT";
+      payload = buildContactPayload(parsed.data.contact);
+      text = previewForRichType("CONTACT", payload);
+    } else if (parsed.data.location) {
+      msgType = "LOCATION";
+      payload = buildLocationPayload(parsed.data.location);
+      text = previewForRichType("LOCATION", payload);
+    } else if (parsed.data.poll) {
+      msgType = "POLL";
+      payload = buildPollPayload(parsed.data.poll);
+      text = previewForRichType("POLL", payload);
+    } else if (parsed.data.event) {
+      msgType = "EVENT";
+      payload = buildEventPayload(parsed.data.event);
+      text = previewForRichType("EVENT", payload);
+    } else if (att) {
+      text = text || previewForType(msgType, att.name);
+    }
 
     let preview: Prisma.InputJsonValue | undefined;
     if (msgType === "TEXT" && text) {
@@ -241,6 +311,10 @@ export async function messageRoutes(app: FastifyInstance) {
       }
     }
 
+    const ttl = conv?.disappearingSeconds ?? 0;
+    const expiresAt =
+      ttl > 0 ? new Date(Date.now() + ttl * 1000) : undefined;
+
     const created = await prisma.message.create({
       data: {
         conversationId: id,
@@ -248,10 +322,12 @@ export async function messageRoutes(app: FastifyInstance) {
         type: msgType,
         text,
         attachment: att ?? undefined,
+        payload,
         preview,
         clientId: parsed.data.client_id,
         status: "SENT",
         replyToId,
+        expiresAt,
       },
     });
 
@@ -289,10 +365,11 @@ export async function messageRoutes(app: FastifyInstance) {
       void emitReceipt(id, "delivered", [created.id]);
     }
 
-    const pushPreview = previewForType(
-      created.type === "TEXT" ? "TEXT" : created.type,
-      att?.name,
-    );
+    const pushPreview =
+      created.type === "TEXT" || created.type === "IMAGE" || created.type === "AUDIO" ||
+      created.type === "FILE" || created.type === "VIDEO"
+        ? previewForType(created.type, att?.name)
+        : (created.text ?? previewForRichType(created.type, payload));
     void notifyNewMessage({
       conversationId: id,
       senderId: userId,
@@ -637,6 +714,7 @@ export async function messageRoutes(app: FastifyInstance) {
         type: source.type,
         text: source.text,
         attachment: source.attachment ?? undefined,
+        payload: source.payload ?? undefined,
         status: "SENT",
         forwarded: true,
       },
@@ -661,5 +739,108 @@ export async function messageRoutes(app: FastifyInstance) {
     }).catch(() => {});
 
     return reply.code(201).send(dto);
+  });
+
+  app.post("/api/messages/:id/vote", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        option_id: z.string().min(1).optional(),
+        option_ids: z.array(z.string().min(1)).optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg || msg.type !== "POLL" || msg.deletedForEveryoneAt) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const payload = (msg.payload ?? {}) as {
+      question?: string;
+      multiple?: boolean;
+      closed?: boolean;
+      options?: { id: string; text: string; voter_ids: string[] }[];
+    };
+    if (payload.closed) {
+      return reply.code(400).send({ error: "poll_closed" });
+    }
+    const optionIds = new Set(
+      parsed.data.option_ids?.length
+        ? parsed.data.option_ids
+        : parsed.data.option_id
+          ? [parsed.data.option_id]
+          : [],
+    );
+    if (optionIds.size === 0) {
+      return reply.code(400).send({ error: "option_required" });
+    }
+    if (!payload.multiple && optionIds.size > 1) {
+      return reply.code(400).send({ error: "single_choice" });
+    }
+    const options = (payload.options ?? []).map((o) => {
+      const voters = new Set(o.voter_ids ?? []);
+      voters.delete(userId);
+      if (optionIds.has(o.id)) voters.add(userId);
+      return { ...o, voter_ids: [...voters] };
+    });
+    if (![...optionIds].every((oid) => options.some((o) => o.id === oid))) {
+      return reply.code(400).send({ error: "invalid_option" });
+    }
+    const updated = await prisma.message.update({
+      where: { id },
+      data: { payload: { ...payload, options } },
+      include: messageInclude,
+    });
+    const dto = toMessageDto(updated, userId);
+    broadcastMessage(msg.conversationId, dto);
+    return dto;
+  });
+
+  app.post("/api/messages/:id/rsvp", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        answer: z.enum(["going", "maybe", "not_going"]),
+        plus_one: z.boolean().optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg || msg.type !== "EVENT" || msg.deletedForEveryoneAt) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const payload = (msg.payload ?? {}) as {
+      title?: string;
+      rsvps?: { user_id: string; answer: string; plus_one?: boolean }[];
+      [k: string]: unknown;
+    };
+    if (payload.cancelled) {
+      return reply.code(400).send({ error: "event_cancelled" });
+    }
+    const rsvps = (payload.rsvps ?? []).filter((r) => r.user_id !== userId);
+    rsvps.push({
+      user_id: userId,
+      answer: parsed.data.answer,
+      plus_one: Boolean(parsed.data.plus_one),
+    });
+    const updated = await prisma.message.update({
+      where: { id },
+      data: { payload: { ...payload, rsvps } },
+      include: messageInclude,
+    });
+    const dto = toMessageDto(updated, userId);
+    broadcastMessage(msg.conversationId, dto);
+    return dto;
   });
 }

@@ -151,6 +151,8 @@ export async function wsRoutes(app: FastifyInstance) {
       realtimeHub.detach(socket);
       const stillOnline = realtimeHub.isOnline(userId);
       if (stillOnline) return;
+      const seenAt = new Date().toISOString();
+      void import("../privacy.js").then(({ touchLastSeen }) => touchLastSeen(userId));
       for (const conversationId of rooms) {
         realtimeHub.toRoom(conversationId, {
           type: "presence",
@@ -158,7 +160,7 @@ export async function wsRoutes(app: FastifyInstance) {
             user_id: userId,
             conversation_id: conversationId,
             online: false,
-            last_seen_at: new Date().toISOString(),
+            last_seen_at: seenAt,
           },
         });
       }

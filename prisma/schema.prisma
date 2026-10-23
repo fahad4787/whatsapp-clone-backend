@@ -29,6 +29,11 @@ model User {
   about       String?
   avatarUrl   String?
   bannedAt    DateTime?
+  lastSeenAt  DateTime?
+  /// everyone | contacts | nobody
+  lastSeenPrivacy String @default("everyone")
+  /// everyone | same_as_last_seen | nobody
+  onlinePrivacy   String @default("everyone")
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -131,6 +136,10 @@ model Conversation {
   directKey   String?          @unique
   onlyAdminsCanSend     Boolean @default(false)
   onlyAdminsCanEditInfo Boolean @default(false)
+  /// 0 = off; otherwise TTL seconds for new messages (24h / 7d / 90d).
+  disappearingSeconds   Int     @default(0)
+  disappearingSetBy     String?
+  disappearingSetAt     DateTime?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
@@ -144,6 +153,10 @@ enum MessageType {
   AUDIO
   FILE
   VIDEO
+  CONTACT
+  LOCATION
+  POLL
+  EVENT
 }
 
 enum MessageStatus {
@@ -170,6 +183,9 @@ model Message {
   replyTo               Message?      @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
   replies               Message[]     @relation("MessageReplies")
   forwarded             Boolean       @default(false)
+  /// Rich payload for CONTACT / LOCATION / POLL / EVENT (and future).
+  payload               Json?
+  expiresAt             DateTime?
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
@@ -181,6 +197,7 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([senderId])
   @@index([replyToId])
+  @@index([expiresAt])
 }
 
 /// Per-user "delete for me" (message hidden only for this user).
