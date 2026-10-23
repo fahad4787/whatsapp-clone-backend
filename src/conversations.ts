@@ -67,6 +67,8 @@ export function toConversationDto(
     unread_count: unreadCount,
     archived: me?.archived ?? false,
     pinned: Boolean(me?.pinnedAt),
+    favorite: Boolean(me?.favoritedAt),
+    wallpaper: me?.wallpaper ?? null,
     muted_until: me?.mutedUntil?.toISOString() ?? null,
     blocked_by_me: blockFlags.blocked_by_me,
     blocked_me: blockFlags.blocked_me,

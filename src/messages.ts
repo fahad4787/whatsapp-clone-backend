@@ -5,6 +5,7 @@ type MessageWithExtras = Message & {
   replyTo?: Message | null;
   reactions?: MessageReaction[];
   stars?: { userId: string }[];
+  viewOnceOpens?: { userId: string }[];
 };
 
 function replyPreview(msg: Message | null | undefined) {
@@ -232,13 +233,27 @@ export function toMessageDto(msg: MessageWithExtras, viewerId?: string) {
   const payloadRec = asRecord(payload);
   const isSystem = Boolean(payloadRec?.system);
 
+  // View-once: hide media once the viewer opened it (or, for the sender, once a recipient did).
+  const opens = msg.viewOnceOpens ?? [];
+  const viewOnceOpened =
+    msg.viewOnce &&
+    !hideBody &&
+    Boolean(viewerId) &&
+    (viewerId === msg.senderId
+      ? opens.some((o) => o.userId !== msg.senderId)
+      : opens.some((o) => o.userId === viewerId));
+
   return {
     id: msg.id,
     conversation_id: msg.conversationId,
     sender_id: msg.senderId,
     type: type.toLowerCase(),
-    text: hideBody ? (expired && !deleted ? "This message has disappeared" : null) : msg.text,
-    attachment: hideBody ? null : (msg.attachment ?? null),
+    text: hideBody
+      ? (expired && !deleted ? "This message has disappeared" : null)
+      : viewOnceOpened
+        ? "Opened"
+        : msg.text,
+    attachment: hideBody || viewOnceOpened ? null : (msg.attachment ?? null),
     preview: hideBody ? null : (msg.preview ?? null),
     system: isSystem,
     poll: type === "POLL" && payload ? pollToDto(payload, viewerId) : null,
@@ -264,6 +279,8 @@ export function toMessageDto(msg: MessageWithExtras, viewerId?: string) {
     status: msg.status.toLowerCase(),
     deleted_for_everyone_at: msg.deletedForEveryoneAt?.toISOString() ?? null,
     expires_at: msg.expiresAt?.toISOString() ?? null,
+    edited_at: msg.editedAt?.toISOString() ?? null,
+    view_once: msg.viewOnce,
     reply_to: replyPreview(msg.replyTo),
     forwarded: msg.forwarded,
     reactions: reactionSummaries(msg.reactions),
@@ -277,4 +294,5 @@ export const messageInclude = {
   replyTo: true,
   reactions: true,
   stars: true,
+  viewOnceOpens: { select: { userId: true } },
 } as const;

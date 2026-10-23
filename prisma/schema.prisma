@@ -186,12 +186,16 @@ model Message {
   /// Rich payload for CONTACT / LOCATION / POLL / EVENT (and future).
   payload               Json?
   expiresAt             DateTime?
+  editedAt              DateTime?
+  viewOnce              Boolean       @default(false)
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
-  hides     MessageHide[]
-  stars     MessageStar[]
-  reactions MessageReaction[]
+  hides         MessageHide[]
+  stars         MessageStar[]
+  reactions     MessageReaction[]
+  receipts      MessageReceipt[]
+  viewOnceOpens MessageViewOnceOpen[]
 
   @@unique([conversationId, clientId])
   @@index([conversationId, createdAt])
@@ -236,6 +240,28 @@ model MessageReaction {
   @@index([messageId])
 }
 
+model MessageReceipt {
+  id          String    @id @default(cuid())
+  messageId   String
+  message     Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId      String
+  deliveredAt DateTime?
+  readAt      DateTime?
+
+  @@unique([messageId, userId])
+  @@index([messageId])
+}
+
+model MessageViewOnceOpen {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  openedAt  DateTime @default(now())
+
+  @@unique([messageId, userId])
+}
+
 model ConversationMember {
   id             String       @id @default(cuid())
   conversationId String
@@ -249,6 +275,9 @@ model ConversationMember {
   pinnedAt       DateTime?
   /// "Clear chat" for me — hide messages at or before this time.
   clearedAt      DateTime?
+  favoritedAt    DateTime?
+  /// Client wallpaper key, e.g. "default" | "mint" | "dusk".
+  wallpaper      String?
 
   @@unique([conversationId, userId])
   @@index([userId])

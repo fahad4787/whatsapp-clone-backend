@@ -55,6 +55,37 @@ function broadcastMessage(conversationId: string, dto: ReturnType<typeof toMessa
     });
 }
 
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+
+/** Dual-write per-user receipts alongside Message.status. Reading implies delivered. */
+async function recordReceipts(
+  userId: string,
+  messageIds: string[],
+  kind: "delivered" | "read",
+) {
+  if (messageIds.length === 0) return;
+  const now = new Date();
+  await prisma.messageReceipt.createMany({
+    data: messageIds.map((messageId) => ({
+      messageId,
+      userId,
+      deliveredAt: now,
+      readAt: kind === "read" ? now : null,
+    })),
+    skipDuplicates: true,
+  });
+  await prisma.messageReceipt.updateMany({
+    where: { messageId: { in: messageIds }, userId, deliveredAt: null },
+    data: { deliveredAt: now },
+  });
+  if (kind === "read") {
+    await prisma.messageReceipt.updateMany({
+      where: { messageId: { in: messageIds }, userId, readAt: null },
+      data: { readAt: now },
+    });
+  }
+}
+
 async function emitReceipt(
   conversationId: string,
   status: "delivered" | "read",
@@ -140,6 +171,17 @@ export async function messageRoutes(app: FastifyInstance) {
         },
         select: { id: true },
       });
+      // Per-user receipts also cover group messages already past SENT.
+      const toReceipt = await prisma.message.findMany({
+        where: {
+          conversationId: id,
+          senderId: { not: userId },
+          deletedForEveryoneAt: null,
+          receipts: { none: { userId, deliveredAt: { not: null } } },
+        },
+        select: { id: true },
+      });
+      await recordReceipts(userId, toReceipt.map((m) => m.id), "delivered");
       if (toDeliver.length > 0) {
         await prisma.message.updateMany({
           where: { id: { in: toDeliver.map((m) => m.id) } },
@@ -178,6 +220,7 @@ export async function messageRoutes(app: FastifyInstance) {
       .object({
         text: z.string().trim().max(4000).optional(),
         client_id: z.string().min(1).max(80).optional(),
+        view_once: z.boolean().optional(),
         attachment: attachmentSchema,
         reply_to: z
           .object({ id: z.string().min(1) })
@@ -302,6 +345,11 @@ export async function messageRoutes(app: FastifyInstance) {
       text = text || previewForType(msgType, att.name);
     }
 
+    const viewOnce = Boolean(parsed.data.view_once);
+    if (viewOnce && !(att && msgType === "IMAGE")) {
+      return reply.code(400).send({ error: "view_once_requires_image" });
+    }
+
     let preview: Prisma.InputJsonValue | undefined;
     if (msgType === "TEXT" && text) {
       const url = firstUrlInText(text);
@@ -328,6 +376,7 @@ export async function messageRoutes(app: FastifyInstance) {
         status: "SENT",
         replyToId,
         expiresAt,
+        viewOnce,
       },
     });
 
@@ -341,12 +390,16 @@ export async function messageRoutes(app: FastifyInstance) {
       where: { conversationId: id, userId: { not: userId } },
       select: { userId: true },
     });
-    const anyPeerOnline = peers.some((p) => realtimeHub.isOnline(p.userId));
+    const onlinePeers = peers.filter((p) => realtimeHub.isOnline(p.userId));
+    const anyPeerOnline = onlinePeers.length > 0;
     if (anyPeerOnline) {
       await prisma.message.update({
         where: { id: created.id },
         data: { status: "DELIVERED" },
       });
+      for (const peer of onlinePeers) {
+        await recordReceipts(peer.userId, [created.id], "delivered");
+      }
     }
 
     const dto = await loadMessageDto(created.id, userId);
@@ -411,6 +464,7 @@ export async function messageRoutes(app: FastifyInstance) {
         type: { in: [...types] },
         deletedForEveryoneAt: null,
         attachment: { not: Prisma.DbNull },
+        viewOnce: false,
         hides: { none: { userId } },
         ...(member.clearedAt ? { createdAt: { gt: member.clearedAt } } : {}),
       },
@@ -435,6 +489,7 @@ export async function messageRoutes(app: FastifyInstance) {
       conversationId: id,
       deletedForEveryoneAt: null,
       attachment: { not: Prisma.DbNull },
+      viewOnce: false,
       hides: { none: { userId } },
       ...(member.clearedAt ? { createdAt: { gt: member.clearedAt } } : {}),
     };
@@ -477,6 +532,16 @@ export async function messageRoutes(app: FastifyInstance) {
       },
       select: { id: true },
     });
+    const toReceipt = await prisma.message.findMany({
+      where: {
+        conversationId: id,
+        senderId: { not: userId },
+        deletedForEveryoneAt: null,
+        receipts: { none: { userId, readAt: { not: null } } },
+      },
+      select: { id: true },
+    });
+    await recordReceipts(userId, toReceipt.map((m) => m.id), "read");
     if (toRead.length > 0) {
       await prisma.message.updateMany({
         where: { id: { in: toRead.map((m) => m.id) } },
@@ -508,7 +573,6 @@ export async function messageRoutes(app: FastifyInstance) {
       where: {
         id: { in: parsed.data.message_ids },
         senderId: { not: userId },
-        status: "SENT",
         deletedForEveryoneAt: null,
       },
     });
@@ -518,15 +582,19 @@ export async function messageRoutes(app: FastifyInstance) {
 
     // Only mark if caller is a member of that conversation.
     const allowed: string[] = [];
+    const memberIds: string[] = [];
     const byConv = new Map<string, string[]>();
     for (const m of messages) {
       const mem = await assertMember(m.conversationId, userId);
       if (!mem) continue;
+      memberIds.push(m.id);
+      if (m.status !== "SENT") continue;
       allowed.push(m.id);
       const list = byConv.get(m.conversationId) ?? [];
       list.push(m.id);
       byConv.set(m.conversationId, list);
     }
+    await recordReceipts(userId, memberIds, "delivered");
     if (allowed.length === 0) {
       return { updated: 0 };
     }
@@ -599,6 +667,127 @@ export async function messageRoutes(app: FastifyInstance) {
     });
 
     return { ok: true };
+  });
+
+  // --- Wave 15: edit, info, view-once ---
+
+  app.put("/api/messages/:id", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({ text: z.string().trim().min(1).max(4000) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg || msg.deletedForEveryoneAt) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (msg.senderId !== userId) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    if (msg.type !== "TEXT") {
+      return reply.code(400).send({ error: "not_editable" });
+    }
+    if (Date.now() - msg.createdAt.getTime() > EDIT_WINDOW_MS) {
+      return reply.code(400).send({ error: "edit_window_expired" });
+    }
+
+    let preview: Prisma.InputJsonValue | typeof Prisma.DbNull = Prisma.DbNull;
+    const url = firstUrlInText(parsed.data.text);
+    if (url) {
+      const card = await unfurlUrl(url);
+      if (card) preview = card;
+    }
+
+    await prisma.message.update({
+      where: { id },
+      data: { text: parsed.data.text, editedAt: new Date(), preview },
+    });
+    const dto = await loadMessageDto(id, userId);
+    if (!dto) return reply.code(404).send({ error: "not_found" });
+    broadcastMessage(msg.conversationId, dto);
+    return dto;
+  });
+
+  app.get("/api/messages/:id/info", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const msg = await prisma.message.findUnique({
+      where: { id },
+      include: { ...messageInclude, receipts: true, conversation: { select: { type: true } } },
+    });
+    if (!msg || !(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    const receipts = msg.receipts.filter((r) => r.userId !== msg.senderId);
+    // Pre-wave-15 DIRECT messages only carry Message.status; synthesize the peer's entry.
+    if (msg.conversation.type === "DIRECT" && receipts.length === 0 && msg.status !== "SENT") {
+      const peer = await prisma.conversationMember.findFirst({
+        where: { conversationId: msg.conversationId, userId: { not: msg.senderId } },
+        select: { userId: true },
+      });
+      if (peer) {
+        receipts.push({
+          id: "",
+          messageId: msg.id,
+          userId: peer.userId,
+          deliveredAt: msg.updatedAt,
+          readAt: msg.status === "READ" ? msg.updatedAt : null,
+        });
+      }
+    }
+
+    const users = await prisma.user.findMany({
+      where: { id: { in: receipts.map((r) => r.userId) } },
+      select: { id: true, displayName: true, phone: true },
+    });
+    const nameOf = new Map(users.map((u) => [u.id, u.displayName || u.phone]));
+    const entry = (r: { userId: string }, at: Date) => ({
+      user_id: r.userId,
+      display_name: nameOf.get(r.userId) ?? null,
+      at: at.toISOString(),
+    });
+
+    return {
+      message: toMessageDto(msg, userId),
+      delivered: receipts.flatMap((r) => (r.deliveredAt ? [entry(r, r.deliveredAt)] : [])),
+      read: receipts.flatMap((r) => (r.readAt ? [entry(r, r.readAt)] : [])),
+    };
+  });
+
+  app.post("/api/messages/:id/view-once", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const msg = await prisma.message.findUnique({ where: { id }, include: messageInclude });
+    if (!msg || msg.deletedForEveryoneAt || !msg.viewOnce) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (!(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    // Sender never consumes the view; they keep seeing it until a recipient opens.
+    if (msg.senderId === userId) {
+      return toMessageDto(msg, userId);
+    }
+
+    const { count } = await prisma.messageViewOnceOpen.createMany({
+      data: [{ messageId: id, userId }],
+      skipDuplicates: true,
+    });
+    // Let the sender's clients flip to "Opened".
+    const senderDto = await loadMessageDto(id, msg.senderId);
+    if (senderDto) realtimeHub.toUser(msg.senderId, { type: "message", data: senderDto });
+    // Only the opening call receives the attachment; later calls get the stripped DTO.
+    if (count > 0) return toMessageDto(msg, userId);
+    const dto = await loadMessageDto(id, userId);
+    return dto ?? reply.code(404).send({ error: "not_found" });
   });
 
   app.post("/api/messages/:id/reactions", { preHandler: requireUser }, async (req, reply) => {
@@ -701,6 +890,9 @@ export async function messageRoutes(app: FastifyInstance) {
     }
     if (!(await assertMember(source.conversationId, userId))) {
       return reply.code(404).send({ error: "not_found" });
+    }
+    if (source.viewOnce) {
+      return reply.code(400).send({ error: "view_once_not_forwardable" });
     }
     const targetId = parsed.data.conversation_id;
     if (!(await assertMember(targetId, userId))) {

@@ -231,6 +231,8 @@ export async function conversationRoutes(app: FastifyInstance) {
         pinned: z.boolean().optional(),
         muted: z.boolean().optional(),
         muted_until: z.string().datetime().nullable().optional(),
+        wallpaper: z.string().max(40).nullable().optional(),
+        favorite: z.boolean().optional(),
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -239,6 +241,8 @@ export async function conversationRoutes(app: FastifyInstance) {
     if (
       parsed.data.archived === undefined &&
       parsed.data.pinned === undefined &&
+      parsed.data.wallpaper === undefined &&
+      parsed.data.favorite === undefined &&
       parsed.data.muted === undefined &&
       parsed.data.muted_until === undefined
     ) {
@@ -256,6 +260,8 @@ export async function conversationRoutes(app: FastifyInstance) {
       archived?: boolean;
       pinnedAt?: Date | null;
       mutedUntil?: Date | null;
+      favoritedAt?: Date | null;
+      wallpaper?: string | null;
     } = {};
 
     if (parsed.data.archived !== undefined) {
@@ -282,6 +288,13 @@ export async function conversationRoutes(app: FastifyInstance) {
       }
     }
 
+    if (parsed.data.favorite !== undefined) {
+      data.favoritedAt = parsed.data.favorite ? new Date() : null;
+    }
+    if (parsed.data.wallpaper !== undefined) {
+      data.wallpaper = parsed.data.wallpaper;
+    }
+
     const updated = await prisma.conversationMember.update({
       where: { id: member.id },
       data,
@@ -292,6 +305,8 @@ export async function conversationRoutes(app: FastifyInstance) {
       id,
       archived: updated.archived,
       pinned: Boolean(updated.pinnedAt),
+      favorite: Boolean(updated.favoritedAt),
+      wallpaper: updated.wallpaper,
       muted_until: updated.mutedUntil?.toISOString() ?? null,
     };
   });
