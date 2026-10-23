@@ -27,4 +27,8 @@ export const config = {
     process.env.PUBLIC_BASE_URL ??
     process.env.RENDER_EXTERNAL_URL ??
     `http://localhost:${process.env.PORT ?? 8080}`,
+  /** Stringified Firebase service account JSON (Render env). */
+  fcmServiceAccountJson: process.env.FCM_SERVICE_ACCOUNT_JSON ?? "",
+  /** Optional path to service account file for local dev. */
+  fcmServiceAccountPath: process.env.FCM_SERVICE_ACCOUNT_PATH ?? "",
 };

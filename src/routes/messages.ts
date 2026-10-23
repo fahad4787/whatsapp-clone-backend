@@ -4,6 +4,7 @@ import { prisma } from "../db.js";
 import { toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { realtimeHub } from "../realtime/hub.js";
+import { notifyNewMessage } from "../push/fcm.js";
 
 async function assertMember(conversationId: string, userId: string) {
   return prisma.conversationMember.findUnique({
@@ -125,6 +126,17 @@ export async function messageRoutes(app: FastifyInstance) {
 
     const dto = toMessageDto(msg);
     realtimeHub.toRoom(id, { type: "message", data: dto });
+
+    const preview =
+      msg.type === "IMAGE" ? "Photo" : (msg.text ?? "New message");
+    void notifyNewMessage({
+      conversationId: id,
+      senderId: userId,
+      preview,
+      messageId: msg.id,
+    }).catch((err) => {
+      req.log.warn({ err }, "push notify failed");
+    });
 
     return reply.code(201).send(dto);
   });

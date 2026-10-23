@@ -14,8 +14,10 @@ import { adminOtpRoutes } from "./routes/admin/otps.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { messageRoutes } from "./routes/messages.js";
 import { mediaRoutes } from "./routes/media.js";
+import { deviceRoutes } from "./routes/devices.js";
 import { peopleRoutes } from "./routes/people.js";
 import { wsRoutes } from "./routes/ws.js";
+import { initFcm } from "./push/fcm.js";
 
 const uploadsRoot = path.join(process.cwd(), "uploads");
 mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
@@ -58,8 +60,11 @@ export async function buildApp() {
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
   await app.register(mediaRoutes);
+  await app.register(deviceRoutes);
   await app.register(peopleRoutes);
   await app.register(wsRoutes);
+
+  initFcm();
 
   return app;
 }

@@ -33,6 +33,8 @@ services:
         sync: false
       - key: PUBLIC_BASE_URL
         sync: false
+      - key: FCM_SERVICE_ACCOUNT_JSON
+        sync: false
 
   - type: keyvalue
     name: aivora-redis
