@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { toMessageDto } from "../messages.js";
@@ -10,6 +11,23 @@ async function assertMember(conversationId: string, userId: string) {
   return prisma.conversationMember.findUnique({
     where: {
       conversationId_userId: { conversationId, userId },
+    },
+  });
+}
+
+function emitReceipt(
+  conversationId: string,
+  status: "delivered" | "read",
+  messageIds: string[],
+) {
+  if (messageIds.length === 0) return;
+  realtimeHub.toRoom(conversationId, {
+    type: "receipt",
+    data: {
+      conversation_id: conversationId,
+      message_ids: messageIds,
+      message_id: messageIds[0] ?? null,
+      status,
     },
   });
 }
@@ -29,30 +47,33 @@ export async function messageRoutes(app: FastifyInstance) {
     const rows = await prisma.message.findMany({
       where: {
         conversationId: id,
+        hides: { none: { userId } },
+        ...(member.clearedAt ? { createdAt: { gt: member.clearedAt } } : {}),
         ...(q.before ? { createdAt: { lt: new Date(q.before) } } : {}),
       },
       orderBy: { createdAt: "asc" },
       take: limit,
     });
 
-    // Mark peer messages as delivered when listed
-    const delivered = await prisma.message.updateMany({
+    const toDeliver = await prisma.message.findMany({
       where: {
         conversationId: id,
         senderId: { not: userId },
         status: "SENT",
+        deletedForEveryoneAt: null,
       },
-      data: { status: "DELIVERED" },
+      select: { id: true },
     });
-    if (delivered.count > 0) {
-      realtimeHub.toRoom(id, {
-        type: "receipt",
-        data: {
-          conversation_id: id,
-          message_id: null,
-          status: "delivered",
-        },
+    if (toDeliver.length > 0) {
+      await prisma.message.updateMany({
+        where: { id: { in: toDeliver.map((m) => m.id) } },
+        data: { status: "DELIVERED" },
       });
+      emitReceipt(
+        id,
+        "delivered",
+        toDeliver.map((m) => m.id),
+      );
     }
 
     return { items: rows.map(toMessageDto) };
@@ -107,7 +128,7 @@ export async function messageRoutes(app: FastifyInstance) {
     }
 
     const isImage = Boolean(parsed.data.attachment);
-    const msg = await prisma.message.create({
+    let msg = await prisma.message.create({
       data: {
         conversationId: id,
         senderId: userId,
@@ -124,18 +145,30 @@ export async function messageRoutes(app: FastifyInstance) {
       data: { updatedAt: new Date() },
     });
 
-    const dto = toMessageDto(msg);
-    realtimeHub.toRoom(id, { type: "message", data: dto });
-
-    // Peers on home (WS connected but not in this room) still get the event for badge/preview.
+    // If any peer is connected, mark delivered immediately.
     const peers = await prisma.conversationMember.findMany({
       where: { conversationId: id, userId: { not: userId } },
       select: { userId: true },
     });
+    const anyPeerOnline = peers.some((p) => realtimeHub.isOnline(p.userId));
+    if (anyPeerOnline) {
+      msg = await prisma.message.update({
+        where: { id: msg.id },
+        data: { status: "DELIVERED" },
+      });
+    }
+
+    const dto = toMessageDto(msg);
+    realtimeHub.toRoom(id, { type: "message", data: dto });
+
     for (const peer of peers) {
       if (!realtimeHub.isInRoom(peer.userId, id)) {
         realtimeHub.toUser(peer.userId, { type: "message", data: dto });
       }
+    }
+
+    if (anyPeerOnline) {
+      emitReceipt(id, "delivered", [msg.id]);
     }
 
     const preview =
@@ -160,24 +193,132 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found" });
     }
 
-    const updated = await prisma.message.updateMany({
+    const toRead = await prisma.message.findMany({
       where: {
         conversationId: id,
         senderId: { not: userId },
         status: { in: ["SENT", "DELIVERED"] },
+        deletedForEveryoneAt: null,
       },
-      data: { status: "READ" },
+      select: { id: true },
     });
-    if (updated.count > 0) {
-      realtimeHub.toRoom(id, {
-        type: "receipt",
+    if (toRead.length > 0) {
+      await prisma.message.updateMany({
+        where: { id: { in: toRead.map((m) => m.id) } },
+        data: { status: "READ" },
+      });
+      emitReceipt(
+        id,
+        "read",
+        toRead.map((m) => m.id),
+      );
+    }
+
+    return reply.code(204).send();
+  });
+
+  app.post("/api/messages/delivered", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const parsed = z
+      .object({
+        message_ids: z.array(z.string().min(1)).min(1).max(100),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+
+    const messages = await prisma.message.findMany({
+      where: {
+        id: { in: parsed.data.message_ids },
+        senderId: { not: userId },
+        status: "SENT",
+        deletedForEveryoneAt: null,
+      },
+    });
+    if (messages.length === 0) {
+      return { updated: 0 };
+    }
+
+    // Only mark if caller is a member of that conversation.
+    const allowed: string[] = [];
+    const byConv = new Map<string, string[]>();
+    for (const m of messages) {
+      const mem = await assertMember(m.conversationId, userId);
+      if (!mem) continue;
+      allowed.push(m.id);
+      const list = byConv.get(m.conversationId) ?? [];
+      list.push(m.id);
+      byConv.set(m.conversationId, list);
+    }
+    if (allowed.length === 0) {
+      return { updated: 0 };
+    }
+
+    await prisma.message.updateMany({
+      where: { id: { in: allowed } },
+      data: { status: "DELIVERED" },
+    });
+    for (const [conversationId, ids] of byConv) {
+      emitReceipt(conversationId, "delivered", ids);
+    }
+    return { updated: allowed.length };
+  });
+
+  app.delete("/api/messages/:id", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const q = req.query as { for?: string };
+    const scope = (q.for ?? "me").toLowerCase();
+
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const member = await assertMember(msg.conversationId, userId);
+    if (!member) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    if (scope === "everyone") {
+      if (msg.senderId !== userId) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+      const updated = await prisma.message.update({
+        where: { id },
         data: {
-          conversation_id: id,
-          message_id: null,
-          status: "read",
+          deletedForEveryoneAt: new Date(),
+          text: null,
+          attachment: Prisma.DbNull,
         },
       });
+      const dto = toMessageDto(updated);
+      realtimeHub.toRoom(msg.conversationId, { type: "message_deleted", data: dto });
+      // Also push as message update for clients that only listen for message.
+      realtimeHub.toRoom(msg.conversationId, { type: "message", data: dto });
+      return dto;
     }
+
+    await prisma.messageHide.upsert({
+      where: { messageId_userId: { messageId: id, userId } },
+      create: { messageId: id, userId },
+      update: {},
+    });
+    return reply.code(204).send();
+  });
+
+  app.post("/api/conversations/:id/clear", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const member = await assertMember(id, userId);
+    if (!member) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    await prisma.conversationMember.update({
+      where: { conversationId_userId: { conversationId: id, userId } },
+      data: { clearedAt: new Date() },
+    });
 
     return reply.code(204).send();
   });

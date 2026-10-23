@@ -34,6 +34,9 @@ export async function conversationRoutes(app: FastifyInstance) {
             conversationId: m.conversationId,
             senderId: { not: userId },
             status: { not: "READ" },
+            deletedForEveryoneAt: null,
+            hides: { none: { userId } },
+            ...(m.clearedAt ? { createdAt: { gt: m.clearedAt } } : {}),
           },
         });
         return toConversationDto(m.conversation, userId, unread);
@@ -49,11 +52,15 @@ export async function conversationRoutes(app: FastifyInstance) {
     if (!conv || !conv.members.some((m) => m.userId === userId)) {
       return reply.code(404).send({ error: "not_found" });
     }
+    const membership = conv.members.find((m) => m.userId === userId);
     const unread = await prisma.message.count({
       where: {
         conversationId: id,
         senderId: { not: userId },
         status: { not: "READ" },
+        deletedForEveryoneAt: null,
+        hides: { none: { userId } },
+        ...(membership?.clearedAt ? { createdAt: { gt: membership.clearedAt } } : {}),
       },
     });
     return toConversationDto(conv, userId, unread);

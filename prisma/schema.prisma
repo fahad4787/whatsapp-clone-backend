@@ -133,22 +133,37 @@ enum MessageStatus {
 }
 
 model Message {
-  id             String        @id @default(cuid())
-  conversationId String
-  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  senderId       String
-  type           MessageType   @default(TEXT)
-  text           String?
+  id                    String        @id @default(cuid())
+  conversationId        String
+  conversation          Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId              String
+  type                  MessageType   @default(TEXT)
+  text                  String?
   /// AttachmentDto-shaped JSON (url, key, mime, size, …)
-  attachment     Json?
-  clientId       String?
-  status         MessageStatus @default(SENT)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  attachment            Json?
+  clientId              String?
+  status                MessageStatus @default(SENT)
+  deletedForEveryoneAt  DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  hides MessageHide[]
 
   @@unique([conversationId, clientId])
   @@index([conversationId, createdAt])
   @@index([senderId])
+}
+
+/// Per-user "delete for me" (message hidden only for this user).
+model MessageHide {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([userId])
 }
 
 model ConversationMember {
@@ -160,6 +175,8 @@ model ConversationMember {
   role           MemberRole   @default(MEMBER)
   joinedAt       DateTime     @default(now())
   archived       Boolean      @default(false)
+  /// "Clear chat" for me — hide messages at or before this time.
+  clearedAt      DateTime?
 
   @@unique([conversationId, userId])
   @@index([userId])
