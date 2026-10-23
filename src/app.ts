@@ -37,6 +37,7 @@ export async function buildApp() {
   await app.register(cors, {
     origin: config.corsOrigin.split(",").map((s: string) => s.trim()),
     credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
   await app.register(websocket, {

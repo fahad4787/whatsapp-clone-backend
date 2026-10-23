@@ -106,6 +106,14 @@ describe("Wave 8 admin moderation", () => {
     });
     expect(unban.statusCode).toBe(200);
     expect(unban.json().banned).toBe(false);
+
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/users/${a.userId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(del.statusCode).toBe(204);
+    expect(await prisma.user.findUnique({ where: { id: a.userId } })).toBeNull();
   });
 
   it("creates a report, lists it, and resolves it", async () => {

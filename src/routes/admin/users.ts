@@ -133,4 +133,26 @@ export async function adminUserRoutes(app: FastifyInstance) {
 
     return toAdminUserDto(updated);
   });
+
+  app.delete("/api/admin/users/:id", { preHandler: requireAdmin }, async (req, reply) => {
+    const adminId = (req as typeof req & { adminId: string }).adminId;
+    const { id } = req.params as { id: string };
+
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    await prisma.user.delete({ where: { id } });
+
+    await prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: "user.delete",
+        meta: { user_id: id, phone: user.phone },
+      },
+    });
+
+    return reply.code(204).send();
+  });
 }
