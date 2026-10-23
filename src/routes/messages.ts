@@ -15,21 +15,33 @@ async function assertMember(conversationId: string, userId: string) {
   });
 }
 
-function emitReceipt(
+async function emitReceipt(
   conversationId: string,
   status: "delivered" | "read",
   messageIds: string[],
 ) {
   if (messageIds.length === 0) return;
-  realtimeHub.toRoom(conversationId, {
-    type: "receipt",
+  const frame = {
+    type: "receipt" as const,
     data: {
       conversation_id: conversationId,
       message_ids: messageIds,
       message_id: messageIds[0] ?? null,
       status,
     },
+  };
+  realtimeHub.toRoom(conversationId, frame);
+  // Senders who left the room (e.g. on home) still need tick updates.
+  const msgs = await prisma.message.findMany({
+    where: { id: { in: messageIds } },
+    select: { senderId: true },
   });
+  const senderIds = [...new Set(msgs.map((m) => m.senderId))];
+  for (const senderId of senderIds) {
+    if (!realtimeHub.isInRoom(senderId, conversationId)) {
+      realtimeHub.toUser(senderId, frame);
+    }
+  }
 }
 
 export async function messageRoutes(app: FastifyInstance) {
@@ -69,7 +81,7 @@ export async function messageRoutes(app: FastifyInstance) {
         where: { id: { in: toDeliver.map((m) => m.id) } },
         data: { status: "DELIVERED" },
       });
-      emitReceipt(
+      void emitReceipt(
         id,
         "delivered",
         toDeliver.map((m) => m.id),
@@ -168,7 +180,7 @@ export async function messageRoutes(app: FastifyInstance) {
     }
 
     if (anyPeerOnline) {
-      emitReceipt(id, "delivered", [msg.id]);
+      void emitReceipt(id, "delivered", [msg.id]);
     }
 
     const preview =
@@ -207,7 +219,7 @@ export async function messageRoutes(app: FastifyInstance) {
         where: { id: { in: toRead.map((m) => m.id) } },
         data: { status: "READ" },
       });
-      emitReceipt(
+      void emitReceipt(
         id,
         "read",
         toRead.map((m) => m.id),
@@ -260,7 +272,7 @@ export async function messageRoutes(app: FastifyInstance) {
       data: { status: "DELIVERED" },
     });
     for (const [conversationId, ids] of byConv) {
-      emitReceipt(conversationId, "delivered", ids);
+      void emitReceipt(conversationId, "delivered", ids);
     }
     return { updated: allowed.length };
   });
