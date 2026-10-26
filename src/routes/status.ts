@@ -200,7 +200,12 @@ export async function statusRoutes(app: FastifyInstance) {
       create: { statusId: id, userId },
       update: { seenAt: new Date() },
     });
-    return { ok: true, seen: true };
+    const viewCount = await prisma.statusView.count({ where: { statusId: id } });
+    realtimeHub.toUser(status.userId, {
+      type: "status.viewed",
+      data: { status_id: id, view_count: viewCount },
+    });
+    return { ok: true, seen: true, view_count: viewCount };
   });
 
   app.get("/api/status/:id/viewers", { preHandler: requireUser }, async (req, reply) => {
@@ -232,7 +237,18 @@ export async function statusRoutes(app: FastifyInstance) {
     if (!status || status.userId !== userId) {
       return reply.code(404).send({ error: "not_found" });
     }
+    const recipients = await eligibleStatusRecipients({
+      authorId: userId,
+      audience: status.audience as StatusAudience,
+      audienceIds: status.audienceIds,
+    });
     await prisma.status.delete({ where: { id } });
+    for (const peerId of recipients) {
+      realtimeHub.toUser(peerId, {
+        type: "status.deleted",
+        data: { status_id: id, user_id: userId },
+      });
+    }
     return { ok: true };
   });
 
