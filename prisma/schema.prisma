@@ -45,6 +45,8 @@ model User {
   reportsAgainst  Report[]             @relation("ReportsAgainst")
   blocksCreated   Block[]              @relation("BlocksCreated")
   blocksReceived  Block[]              @relation("BlocksReceived")
+  callsInitiated  Call[]               @relation("CallsInitiated")
+  callParticipants CallParticipant[]
 }
 
 model Block {
@@ -145,6 +147,7 @@ model Conversation {
 
   members  ConversationMember[]
   messages Message[]
+  calls    Call[]
 }
 
 enum MessageType {
@@ -282,6 +285,66 @@ model ConversationMember {
   @@unique([conversationId, userId])
   @@index([userId])
   @@index([userId, pinnedAt])
+}
+
+enum CallMedia {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  ENDED
+  REJECTED
+  MISSED
+}
+
+enum CallParticipantStatus {
+  RINGING
+  JOINED
+  LEFT
+  REJECTED
+  MISSED
+}
+
+model Call {
+  id             String     @id @default(cuid())
+  kind           String     @default("direct")
+  media          CallMedia  @default(AUDIO)
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  initiatorId    String
+  initiator      User       @relation("CallsInitiated", fields: [initiatorId], references: [id], onDelete: Cascade)
+  roomName       String     @unique
+  status         CallStatus @default(RINGING)
+  endReason      String?
+  startedAt      DateTime   @default(now())
+  answeredAt     DateTime?
+  endedAt        DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  participants   CallParticipant[]
+
+  @@index([status, createdAt])
+  @@index([initiatorId])
+  @@index([conversationId])
+}
+
+model CallParticipant {
+  id        String                @id @default(cuid())
+  callId    String
+  call      Call                  @relation(fields: [callId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status    CallParticipantStatus @default(RINGING)
+  joinedAt  DateTime?
+  leftAt    DateTime?
+  createdAt DateTime              @default(now())
+
+  @@unique([callId, userId])
+  @@index([userId])
 }
 
 enum ReportStatus {

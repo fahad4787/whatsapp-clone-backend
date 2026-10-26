@@ -31,4 +31,8 @@ export const config = {
   fcmServiceAccountJson: process.env.FCM_SERVICE_ACCOUNT_JSON ?? "",
   /** Optional path to service account file for local dev. */
   fcmServiceAccountPath: process.env.FCM_SERVICE_ACCOUNT_PATH ?? "",
+  /** LiveKit Cloud (or self-hosted) — Wave 16 calls. */
+  livekitUrl: process.env.LIVEKIT_URL ?? "",
+  livekitApiKey: process.env.LIVEKIT_API_KEY ?? "",
+  livekitApiSecret: process.env.LIVEKIT_API_SECRET ?? "",
 };
