@@ -7,6 +7,11 @@ import { z } from "zod";
 import { isBlockedEitherWay } from "../blocks.js";
 import { directKeyFor, toConversationDtoAsync } from "../conversations.js";
 import { prisma } from "../db.js";
+import {
+  buildChatExport,
+  createExportZipStream,
+  safeExportBasename,
+} from "../exportChat.js";
 import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { publicUrl } from "../publicUrl.js";
@@ -624,5 +629,79 @@ export async function conversationRoutes(app: FastifyInstance) {
       });
 
     return toConversationDtoAsync(updated, userId);
+  });
+
+  /** Wave 17 — export chat as .txt (media=0) or .zip with media (media=1). */
+  app.get("/api/conversations/:id/export", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const q = req.query as { media?: string };
+    const includeMedia = q.media === "1" || q.media === "true";
+
+    const conv = await prisma.conversation.findUnique({
+      where: { id },
+      include: {
+        members: { include: { user: true } },
+      },
+    });
+    if (!conv || !conv.members.some((m) => m.userId === userId)) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const membership = conv.members.find((m) => m.userId === userId)!;
+
+    const messages = await prisma.message.findMany({
+      where: {
+        conversationId: id,
+        hides: { none: { userId } },
+        ...(membership.clearedAt ? { createdAt: { gt: membership.clearedAt } } : {}),
+      },
+      orderBy: { createdAt: "asc" },
+      take: 50_000,
+      select: {
+        id: true,
+        type: true,
+        text: true,
+        attachment: true,
+        payload: true,
+        deletedForEveryoneAt: true,
+        expiresAt: true,
+        viewOnce: true,
+        createdAt: true,
+        senderId: true,
+      },
+    });
+
+    const nameById = new Map(
+      conv.members.map((m) => [
+        m.userId,
+        m.user.displayName?.trim() || m.user.phone || m.userId,
+      ]),
+    );
+    const peer =
+      conv.type === "DIRECT"
+        ? conv.members.find((m) => m.userId !== userId)?.user
+        : null;
+    const title =
+      conv.type === "GROUP"
+        ? conv.title?.trim() || "Group"
+        : peer?.displayName?.trim() || peer?.phone || "Chat";
+
+    const built = buildChatExport({
+      title,
+      messages: messages.map((m) => ({ ...m, type: String(m.type) })),
+      senderName: (sid) => nameById.get(sid) || sid,
+      includeMedia,
+    });
+
+    const base = safeExportBasename(title);
+    if (!includeMedia) {
+      reply.header("Content-Type", "text/plain; charset=utf-8");
+      reply.header("Content-Disposition", `attachment; filename="Aivora Chat - ${base}.txt"`);
+      return reply.send(built.text);
+    }
+
+    reply.header("Content-Type", "application/zip");
+    reply.header("Content-Disposition", `attachment; filename="Aivora Chat - ${base}.zip"`);
+    return reply.send(createExportZipStream(built));
   });
 }
