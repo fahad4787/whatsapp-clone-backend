@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { livekitConfigured, livekitUrl, mintLivekitToken } from "../livekit.js";
+import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { realtimeHub } from "../realtime/hub.js";
 
@@ -94,6 +95,75 @@ function notifyParticipants(
   for (const p of call.participants) {
     if (exceptUserId && p.userId === exceptUserId) continue;
     realtimeHub.toUser(p.userId, { type, data: payload });
+  }
+}
+
+/** Bolta/WhatsApp-style centered call notice in the chat timeline. */
+function callNoticeText(call: NonNullable<CallRow>): string {
+  const video = call.media === "VIDEO";
+  const kind = video ? "Video call" : "Voice call";
+  const reason = call.endReason ?? "";
+  const dur = durationSeconds(call);
+
+  if (call.answeredAt) {
+    const m = Math.floor(dur / 60);
+    const s = dur % 60;
+    return `${kind} · ${m}:${s.toString().padStart(2, "0")}`;
+  }
+  if (reason === "rejected" || call.status === "REJECTED") {
+    return `${kind} declined`;
+  }
+  if (reason === "cancelled") {
+    return `${kind} cancelled`;
+  }
+  if (reason === "busy") {
+    return `${kind} · busy`;
+  }
+  // timeout / missed / unanswered hangup
+  return video ? "Missed video call" : "Missed voice call";
+}
+
+async function postCallSystemMessage(call: NonNullable<CallRow>) {
+  const conversationId = call.conversationId;
+  if (!conversationId) return;
+  try {
+    const notice = await prisma.message.create({
+      data: {
+        conversationId,
+        senderId: call.initiatorId,
+        type: "TEXT",
+        text: callNoticeText(call),
+        clientId: `call-notice-${call.id}`,
+        payload: {
+          system: true,
+          kind: "call",
+          call_id: call.id,
+          media: call.media.toLowerCase(),
+          end_reason: call.endReason,
+          status: call.status.toLowerCase(),
+          duration_seconds: durationSeconds(call),
+        },
+        status: "SENT",
+      },
+      include: messageInclude,
+    });
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() },
+    });
+    const dto = toMessageDto(notice);
+    realtimeHub.toRoom(conversationId, { type: "message", data: dto });
+    const peers = await prisma.conversationMember.findMany({
+      where: { conversationId },
+      select: { userId: true },
+    });
+    for (const peer of peers) {
+      if (!realtimeHub.isInRoom(peer.userId, conversationId)) {
+        realtimeHub.toUser(peer.userId, { type: "message", data: dto });
+      }
+    }
+  } catch {
+    // Unique clientId on retry — ignore.
   }
 }
 
@@ -208,7 +278,10 @@ export async function callRoutes(app: FastifyInstance) {
           data: { status: "MISSED", leftAt: new Date() },
         });
         const dto = await loadCall(ended.id);
-        if (dto) notifyParticipants(dto, "call.ended", undefined, { end_reason: "timeout" });
+        if (dto) {
+          notifyParticipants(dto, "call.ended", undefined, { end_reason: "timeout" });
+          await postCallSystemMessage(dto);
+        }
       })();
     }, RING_TTL_MS);
 
@@ -341,6 +414,7 @@ export async function callRoutes(app: FastifyInstance) {
       // Tear down every participant UI (caller ringing + any other devices).
       notifyParticipants(updated, "call.rejected", undefined, { end_reason: "rejected" });
       notifyParticipants(updated, "call.ended", undefined, { end_reason: "rejected" });
+      await postCallSystemMessage(updated);
       return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
     }
 
@@ -379,6 +453,7 @@ export async function callRoutes(app: FastifyInstance) {
     notifyParticipants(updated, "call.ended", undefined, {
       end_reason: endReason,
     });
+    await postCallSystemMessage(updated);
     return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
   });
 }
