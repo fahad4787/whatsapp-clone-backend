@@ -216,6 +216,56 @@ export async function callRoutes(app: FastifyInstance) {
     return reply.code(201).send(result);
   });
 
+  app.get("/api/calls/history", { preHandler: requireUser }, async (req) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const q = req.query as { limit?: string };
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 50) || 50));
+
+    const rows = await prisma.call.findMany({
+      where: { participants: { some: { userId } } },
+      orderBy: { startedAt: "desc" },
+      take: limit,
+      include: {
+        initiator: { select: { id: true, phone: true, displayName: true, avatarUrl: true } },
+        participants: {
+          include: {
+            user: { select: { id: true, phone: true, displayName: true, avatarUrl: true } },
+          },
+        },
+        conversation: { select: { id: true, type: true, title: true } },
+      },
+    });
+
+    return {
+      items: rows.map((call) => {
+        const dto = toCallDto(call);
+        const peer = call.participants.find((p) => p.userId !== userId)?.user;
+        const peerName =
+          call.conversation?.type === "GROUP"
+            ? call.conversation.title || "Group"
+            : peer?.displayName || peer?.phone || dto.caller?.name || "Unknown";
+        const outgoing = call.initiatorId === userId;
+        const missed =
+          !outgoing &&
+          (call.status === "MISSED" ||
+            call.status === "REJECTED" ||
+            call.participants.some(
+              (p) => p.userId === userId && (p.status === "MISSED" || p.status === "REJECTED"),
+            ));
+        const direction = outgoing ? "outgoing" : missed ? "missed" : "incoming";
+        return {
+          ...dto,
+          peer_name: peerName,
+          peer_user_id: peer?.id ?? null,
+          peer_avatar_url: peer?.avatarUrl ?? null,
+          direction,
+          missed,
+          video: call.media === "VIDEO",
+        };
+      }),
+    };
+  });
+
   app.get("/api/calls/:id", { preHandler: requireUser }, async (req, reply) => {
     const userId = (req as typeof req & { userId: string }).userId;
     const { id } = req.params as { id: string };
@@ -273,51 +323,61 @@ export async function callRoutes(app: FastifyInstance) {
       if (call.status !== "RINGING") {
         return reply.code(409).send({ error: "not_ringing" });
       }
+      // 1:1 decline always ends the call for everyone.
       await prisma.callParticipant.update({
         where: { callId_userId: { callId: id, userId } },
         data: { status: "REJECTED", leftAt: new Date() },
       });
-      const stillRinging = await prisma.callParticipant.count({
-        where: { callId: id, status: "RINGING", userId: { not: call.initiatorId } },
+      await prisma.callParticipant.updateMany({
+        where: { callId: id, status: "RINGING" },
+        data: { status: "MISSED", leftAt: new Date() },
       });
-      if (stillRinging === 0) {
-        await prisma.call.update({
-          where: { id },
-          data: { status: "REJECTED", endReason: "rejected", endedAt: new Date() },
-        });
-      }
+      await prisma.call.update({
+        where: { id },
+        data: { status: "REJECTED", endReason: "rejected", endedAt: new Date() },
+      });
       const updated = await loadCall(id);
       if (!updated) return reply.code(500).send({ error: "update_failed" });
-      realtimeHub.toUser(call.initiatorId, {
-        type: "call.rejected",
-        data: toCallDto(updated),
-      });
-      if (updated.status === "REJECTED") {
-        notifyParticipants(updated, "call.ended", undefined, { end_reason: "rejected" });
-      }
+      // Tear down every participant UI (caller ringing + any other devices).
+      notifyParticipants(updated, "call.rejected", undefined, { end_reason: "rejected" });
+      notifyParticipants(updated, "call.ended", undefined, { end_reason: "rejected" });
       return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
     }
 
-    // end | leave
+    // end | leave (hang up / cancel while ringing)
     if (["ENDED", "REJECTED", "MISSED"].includes(call.status)) {
       return { call: toCallDto(call), token: null, livekit_url: null, invited: false };
     }
+    const wasRinging = call.status === "RINGING";
+    const endReason = wasRinging
+      ? userId === call.initiatorId
+        ? "cancelled"
+        : "callee_hangup"
+      : userId === call.initiatorId
+        ? "caller_hangup"
+        : "callee_hangup";
     await prisma.callParticipant.update({
       where: { callId_userId: { callId: id, userId } },
       data: { status: "LEFT", leftAt: new Date() },
     });
+    if (wasRinging) {
+      await prisma.callParticipant.updateMany({
+        where: { callId: id, status: "RINGING" },
+        data: { status: "MISSED", leftAt: new Date() },
+      });
+    }
     await prisma.call.update({
       where: { id },
       data: {
-        status: "ENDED",
-        endReason: userId === call.initiatorId ? "caller_hangup" : "callee_hangup",
+        status: wasRinging ? "MISSED" : "ENDED",
+        endReason,
         endedAt: new Date(),
       },
     });
     const updated = await loadCall(id);
     if (!updated) return reply.code(500).send({ error: "update_failed" });
     notifyParticipants(updated, "call.ended", undefined, {
-      end_reason: updated.endReason,
+      end_reason: endReason,
     });
     return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
   });
