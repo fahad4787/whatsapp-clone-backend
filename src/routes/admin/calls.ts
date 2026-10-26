@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../../db.js";
 import { requireAdmin } from "../../plugins/auth.js";
+import { callBus } from "../../realtime/callBus.js";
 import { forceEndCallByAdmin } from "../calls.js";
 
 const callInclude = {
@@ -62,18 +63,94 @@ function toAdminCallDto(call: CallWithParts) {
   };
 }
 
-export async function adminCallRoutes(app: FastifyInstance) {
-  app.get("/api/admin/calls/live", { preHandler: requireAdmin }, async () => {
-    const rows = await prisma.call.findMany({
+async function loadLiveSnapshot() {
+  const [rows, active, today] = await Promise.all([
+    prisma.call.findMany({
       where: { status: { in: ["RINGING", "ACTIVE"] } },
       orderBy: { startedAt: "desc" },
       take: 100,
       include: callInclude,
-    });
-    return {
-      items: rows.map((r) => toAdminCallDto(r)),
-      count: rows.length,
+    }),
+    prisma.call.count({ where: { status: { in: ["RINGING", "ACTIVE"] } } }),
+    prisma.call.count({
+      where: {
+        startedAt: {
+          gte: (() => {
+            const d = new Date();
+            d.setUTCHours(0, 0, 0, 0);
+            return d;
+          })(),
+        },
+      },
+    }),
+  ]);
+  const items = rows.map((r) => toAdminCallDto(r));
+  return {
+    type: "calls" as const,
+    items,
+    count: items.length,
+    calls_active: active,
+    calls_today: today,
+  };
+}
+
+export async function adminCallRoutes(app: FastifyInstance) {
+  app.get("/api/admin/calls/live", { preHandler: requireAdmin }, async () => {
+    const snap = await loadLiveSnapshot();
+    return { items: snap.items, count: snap.count };
+  });
+
+  /** Live SSE for admin UI — EventSource uses ?token= (no Authorization header). */
+  app.get("/api/admin/calls/stream", { preHandler: requireAdmin }, async (req, reply) => {
+    reply.hijack();
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin : null;
+    const headers: Record<string, string> = {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     };
+    if (origin) {
+      headers["Access-Control-Allow-Origin"] = origin;
+      headers["Access-Control-Allow-Credentials"] = "true";
+      headers["Vary"] = "Origin";
+    }
+    reply.raw.writeHead(200, headers);
+    reply.raw.write("\n");
+
+    let closed = false;
+    const push = async () => {
+      if (closed) return;
+      try {
+        const payload = JSON.stringify(await loadLiveSnapshot());
+        reply.raw.write(`data: ${payload}\n\n`);
+      } catch (err) {
+        req.log.warn({ err }, "admin.calls.stream_push_failed");
+      }
+    };
+
+    await push();
+    const onChanged = () => {
+      void push();
+    };
+    callBus.on("changed", onChanged);
+    const keepalive = setInterval(() => {
+      if (!closed) reply.raw.write(": keepalive\n\n");
+    }, 20_000);
+    // Safety net if a code path forgets callBus.changed().
+    const poll = setInterval(() => {
+      void push();
+    }, 12_000);
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      callBus.off("changed", onChanged);
+      clearInterval(keepalive);
+      clearInterval(poll);
+    };
+    req.raw.on("close", cleanup);
+    req.raw.on("error", cleanup);
   });
 
   app.get("/api/admin/calls", { preHandler: requireAdmin }, async (req) => {

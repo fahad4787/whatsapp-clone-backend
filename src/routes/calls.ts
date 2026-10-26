@@ -6,6 +6,7 @@ import { livekitConfigured, livekitUrl, mintLivekitToken } from "../livekit.js";
 import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
 import { notifyIncomingCall } from "../push/fcm.js";
+import { callBus } from "../realtime/callBus.js";
 import { realtimeHub } from "../realtime/hub.js";
 
 const RING_TTL_MS = 60_000;
@@ -268,11 +269,13 @@ export async function createAndRingCall(opts: {
       if (dto) {
         notifyParticipants(dto, "call.ended", undefined, { end_reason: "timeout" });
         await postCallSystemMessage(dto);
+        callBus.changed();
       }
     })();
   }, RING_TTL_MS);
 
   const result = await tokenFor(opts.userId, full, me?.displayName);
+  callBus.changed();
   return { ok: true, result };
 }
 
@@ -422,6 +425,7 @@ export async function callRoutes(app: FastifyInstance) {
       const updated = await loadCall(id);
       if (!updated) return reply.code(500).send({ error: "update_failed" });
       notifyParticipants(updated, "call.answered", userId);
+      callBus.changed();
       const me = await prisma.user.findUnique({ where: { id: userId } });
       return tokenFor(userId, updated, me?.displayName);
     }
@@ -449,6 +453,7 @@ export async function callRoutes(app: FastifyInstance) {
       notifyParticipants(updated, "call.rejected", undefined, { end_reason: "rejected" });
       notifyParticipants(updated, "call.ended", undefined, { end_reason: "rejected" });
       await postCallSystemMessage(updated);
+      callBus.changed();
       return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
     }
 
@@ -488,6 +493,7 @@ export async function callRoutes(app: FastifyInstance) {
       end_reason: endReason,
     });
     await postCallSystemMessage(updated);
+    callBus.changed();
     return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
   });
 }
@@ -521,5 +527,6 @@ export async function forceEndCallByAdmin(callId: string): Promise<
     end_reason: "admin_force_end",
   });
   await postCallSystemMessage(updated);
+  callBus.changed();
   return { ok: true, call: toCallDto(updated) };
 }

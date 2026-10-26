@@ -26,7 +26,11 @@ export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
 }
 
 export async function requireAdmin(req: FastifyRequest, reply: FastifyReply) {
-  const token = bearerFromHeader(req.headers.authorization);
+  // EventSource cannot set Authorization — allow ?token= for admin SSE streams.
+  const q = req.query as { token?: string };
+  const token =
+    bearerFromHeader(req.headers.authorization) ??
+    (typeof q.token === "string" && q.token.trim() ? q.token.trim() : null);
   if (!token) {
     return reply.code(401).send({ error: "unauthorized" });
   }
