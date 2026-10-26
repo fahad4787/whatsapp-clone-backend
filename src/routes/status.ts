@@ -233,7 +233,7 @@ export async function statusRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found" });
     }
     await prisma.status.delete({ where: { id } });
-    return reply.code(204).send();
+    return { ok: true };
   });
 
   app.post("/api/status/:id/reaction", { preHandler: requireUser }, async (req, reply) => {

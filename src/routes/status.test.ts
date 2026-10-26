@@ -168,6 +168,34 @@ describe("Wave 18 status", () => {
     expect(mine?.statuses.some((s) => s.id === id) ?? false).toBe(false);
   });
 
+  it("deletes own status", async () => {
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/status",
+      headers: { authorization: `Bearer ${userA.access}` },
+      payload: { text: "Delete me" },
+    });
+    const id = create.json().id as string;
+
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/status/${id}`,
+      headers: { authorization: `Bearer ${userA.access}` },
+    });
+    expect(del.statusCode).toBe(200);
+    expect(del.json().ok).toBe(true);
+
+    const feed = await app.inject({
+      method: "GET",
+      url: "/api/status",
+      headers: { authorization: `Bearer ${userA.access}` },
+    });
+    const mine = (feed.json().items as { user: { id: string }; statuses: { id: string }[] }[]).find(
+      (r) => r.user.id === userA.userId,
+    );
+    expect(mine?.statuses.some((s) => s.id === id) ?? false).toBe(false);
+  });
+
   it("updates status privacy on me/privacy", async () => {
     const put = await app.inject({
       method: "PUT",
