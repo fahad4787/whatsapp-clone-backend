@@ -67,7 +67,48 @@ export async function adminReportRoutes(app: FastifyInstance) {
       },
     });
 
-    return { items: rows.map(toAdminReportDto) };
+    const allMessageIds = [
+      ...new Set(
+        rows.flatMap((r) => (Array.isArray(r.messageIds) ? (r.messageIds as string[]) : [])),
+      ),
+    ].slice(0, 200);
+    const messages =
+      allMessageIds.length === 0
+        ? []
+        : await prisma.message.findMany({
+            where: { id: { in: allMessageIds } },
+            select: {
+              id: true,
+              type: true,
+              text: true,
+              conversationId: true,
+              deletedForEveryoneAt: true,
+              createdAt: true,
+            },
+          });
+    const msgMap = new Map(messages.map((m) => [m.id, m]));
+
+    return {
+      items: rows.map((r) => {
+        const base = toAdminReportDto(r);
+        const ids = Array.isArray(r.messageIds) ? (r.messageIds as string[]) : [];
+        return {
+          ...base,
+          messages: ids
+            .map((mid) => msgMap.get(mid))
+            .filter(Boolean)
+            .map((m) => ({
+              id: m!.id,
+              conversation_id: m!.conversationId,
+              type: m!.type.toLowerCase(),
+              text: m!.deletedForEveryoneAt
+                ? "This message was deleted"
+                : m!.text?.slice(0, 160) ?? m!.type.toLowerCase(),
+              created_at: m!.createdAt.toISOString(),
+            })),
+        };
+      }),
+    };
   });
 
   app.post("/api/admin/reports/:id/resolve", { preHandler: requireAdmin }, async (req, reply) => {

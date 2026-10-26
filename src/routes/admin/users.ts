@@ -10,6 +10,9 @@ function toAdminUserDto(u: {
   about: string | null;
   avatarUrl: string | null;
   bannedAt: Date | null;
+  lastSeenAt?: Date | null;
+  lastSeenPrivacy?: string | null;
+  onlinePrivacy?: string | null;
   createdAt: Date;
   updatedAt: Date;
   _count?: { devices: number; memberships: number };
@@ -22,6 +25,9 @@ function toAdminUserDto(u: {
     avatar_url: u.avatarUrl,
     banned: Boolean(u.bannedAt),
     banned_at: u.bannedAt?.toISOString() ?? null,
+    last_seen_at: u.lastSeenAt?.toISOString() ?? null,
+    last_seen_privacy: u.lastSeenPrivacy ?? "everyone",
+    online_privacy: u.onlinePrivacy ?? "everyone",
     created_at: u.createdAt.toISOString(),
     updated_at: u.updatedAt.toISOString(),
     device_count: u._count?.devices ?? 0,

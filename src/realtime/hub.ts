@@ -52,6 +52,11 @@ class RealtimeHub {
     return (this.byUser.get(userId)?.size ?? 0) > 0;
   }
 
+  /** Distinct users with at least one open WebSocket on this instance. */
+  onlineUserCount(): number {
+    return this.byUser.size;
+  }
+
   /** True if the user currently has a socket joined to this conversation (chat open). */
   isInRoom(userId: string, conversationId: string): boolean {
     const sockets = this.byUser.get(userId);
