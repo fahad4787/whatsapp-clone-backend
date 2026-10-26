@@ -202,6 +202,10 @@ export async function scheduledCallRoutes(app: FastifyInstance) {
       startsAt: full.startsAt.toISOString(),
     }).catch(() => undefined);
 
+    req.log.info(
+      { scheduledCallId: full.id, invitees: inviteeIds.length, media: full.media },
+      "scheduled_call.created",
+    );
     return reply.code(201).send(dto);
   });
 
@@ -360,6 +364,10 @@ export async function scheduledCallRoutes(app: FastifyInstance) {
       data: { status: "COMPLETED" },
     });
 
+    req.log.info(
+      { scheduledCallId: id, callId: started.result.call.id, callees: calleeIds.length },
+      "scheduled_call.started",
+    );
     return reply.code(201).send(started.result);
   });
 }
