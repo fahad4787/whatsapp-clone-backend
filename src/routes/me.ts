@@ -60,9 +60,14 @@ export async function meRoutes(app: FastifyInstance) {
     const userId = (req as typeof req & { userId: string }).userId;
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return reply.code(404).send({ error: "not_found" });
+    const statusIds = Array.isArray(user.statusPrivacyIds)
+      ? (user.statusPrivacyIds as string[])
+      : [];
     return {
       last_seen: user.lastSeenPrivacy,
       online: user.onlinePrivacy,
+      status: user.statusPrivacy,
+      status_ids: statusIds,
     };
   });
 
@@ -72,12 +77,21 @@ export async function meRoutes(app: FastifyInstance) {
       .object({
         last_seen: z.enum(["everyone", "contacts", "nobody"]).optional(),
         online: z.enum(["everyone", "same_as_last_seen", "nobody"]).optional(),
+        status: z
+          .enum(["everyone", "contacts", "contacts_except", "only_share"])
+          .optional(),
+        status_ids: z.array(z.string().min(1)).max(200).optional(),
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
     }
-    if (parsed.data.last_seen === undefined && parsed.data.online === undefined) {
+    if (
+      parsed.data.last_seen === undefined &&
+      parsed.data.online === undefined &&
+      parsed.data.status === undefined &&
+      parsed.data.status_ids === undefined
+    ) {
       return reply.code(400).send({ error: "empty_privacy" });
     }
     const user = await prisma.user.update({
@@ -87,11 +101,20 @@ export async function meRoutes(app: FastifyInstance) {
           ? { lastSeenPrivacy: parsed.data.last_seen }
           : {}),
         ...(parsed.data.online !== undefined ? { onlinePrivacy: parsed.data.online } : {}),
+        ...(parsed.data.status !== undefined ? { statusPrivacy: parsed.data.status } : {}),
+        ...(parsed.data.status_ids !== undefined
+          ? { statusPrivacyIds: parsed.data.status_ids }
+          : {}),
       },
     });
+    const statusIds = Array.isArray(user.statusPrivacyIds)
+      ? (user.statusPrivacyIds as string[])
+      : [];
     return {
       last_seen: user.lastSeenPrivacy,
       online: user.onlinePrivacy,
+      status: user.statusPrivacy,
+      status_ids: statusIds,
     };
   });
 

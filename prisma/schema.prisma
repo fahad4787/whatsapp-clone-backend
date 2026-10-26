@@ -34,6 +34,10 @@ model User {
   lastSeenPrivacy String @default("everyone")
   /// everyone | same_as_last_seen | nobody
   onlinePrivacy   String @default("everyone")
+  /// everyone | contacts | contacts_except | only_share
+  statusPrivacy    String @default("contacts")
+  /// User ids for contacts_except / only_share
+  statusPrivacyIds Json?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -49,6 +53,8 @@ model User {
   callParticipants CallParticipant[]
   scheduledCallsOrganized ScheduledCall[] @relation("ScheduledCallsOrganized")
   scheduledCallParticipants ScheduledCallParticipant[]
+  statuses        Status[]
+  statusViews     StatusView[]
 }
 
 model Block {
@@ -394,6 +400,41 @@ model ScheduledCallParticipant {
   createdAt       DateTime                  @default(now())
 
   @@unique([scheduledCallId, userId])
+  @@index([userId])
+}
+
+/// Ephemeral status update (24h).
+model Status {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// text | image | video
+  kind        String   @default("text")
+  text        String?
+  background  String?
+  attachment  Json?
+  /// everyone | contacts | contacts_except | only_share (snapshot at create)
+  audience    String   @default("contacts")
+  audienceIds Json?
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  views       StatusView[]
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+model StatusView {
+  id        String   @id @default(cuid())
+  statusId  String
+  status    Status   @relation(fields: [statusId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seenAt    DateTime @default(now())
+  reaction  String?
+  createdAt DateTime @default(now())
+
+  @@unique([statusId, userId])
   @@index([userId])
 }
 
