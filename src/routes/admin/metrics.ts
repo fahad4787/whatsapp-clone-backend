@@ -24,6 +24,8 @@ export async function adminMetricsRoutes(app: FastifyInstance) {
       pollsToday,
       eventsToday,
       voiceToday,
+      activeCalls,
+      callsToday,
     ] = await Promise.all([
       prisma.user.count(),
       prisma.user.count({ where: { bannedAt: { not: null } } }),
@@ -50,6 +52,8 @@ export async function adminMetricsRoutes(app: FastifyInstance) {
       prisma.message.count({
         where: { createdAt: { gte: startOfToday }, type: "AUDIO" },
       }),
+      prisma.call.count({ where: { status: { in: ["RINGING", "ACTIVE"] } } }),
+      prisma.call.count({ where: { startedAt: { gte: startOfToday } } }),
     ]);
 
     // Distinct users with an open WebSocket on this instance.
@@ -71,6 +75,8 @@ export async function adminMetricsRoutes(app: FastifyInstance) {
       conversations_groups: groupsTotal,
       conversations_direct: directTotal,
       conversations_disappearing: disappearingChats,
+      calls_active: activeCalls,
+      calls_today: callsToday,
     };
   });
 }

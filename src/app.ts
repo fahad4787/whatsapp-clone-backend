@@ -15,6 +15,7 @@ import { adminUserRoutes } from "./routes/admin/users.js";
 import { adminReportRoutes } from "./routes/admin/reports.js";
 import { adminMetricsRoutes } from "./routes/admin/metrics.js";
 import { adminConversationRoutes } from "./routes/admin/conversations.js";
+import { adminCallRoutes } from "./routes/admin/calls.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { messageRoutes } from "./routes/messages.js";
 import { mediaRoutes } from "./routes/media.js";
@@ -71,6 +72,7 @@ export async function buildApp() {
   await app.register(adminReportRoutes);
   await app.register(adminMetricsRoutes);
   await app.register(adminConversationRoutes);
+  await app.register(adminCallRoutes);
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
   await app.register(mediaRoutes);

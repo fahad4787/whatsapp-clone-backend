@@ -491,3 +491,35 @@ export async function callRoutes(app: FastifyInstance) {
     return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
   });
 }
+
+/** Admin moderation: tear down a ringing/active call for every participant. */
+export async function forceEndCallByAdmin(callId: string): Promise<
+  | { ok: true; call: ReturnType<typeof toCallDto> }
+  | { ok: false; code: number; error: string }
+> {
+  const call = await loadCall(callId);
+  if (!call) return { ok: false, code: 404, error: "not_found" };
+  if (["ENDED", "REJECTED", "MISSED"].includes(call.status)) {
+    return { ok: true, call: toCallDto(call) };
+  }
+  const wasRinging = call.status === "RINGING";
+  await prisma.callParticipant.updateMany({
+    where: { callId, status: { in: ["RINGING", "JOINED"] } },
+    data: { status: "LEFT", leftAt: new Date() },
+  });
+  await prisma.call.update({
+    where: { id: callId },
+    data: {
+      status: wasRinging ? "MISSED" : "ENDED",
+      endReason: "admin_force_end",
+      endedAt: new Date(),
+    },
+  });
+  const updated = await loadCall(callId);
+  if (!updated) return { ok: false, code: 500, error: "update_failed" };
+  notifyParticipants(updated, "call.ended", undefined, {
+    end_reason: "admin_force_end",
+  });
+  await postCallSystemMessage(updated);
+  return { ok: true, call: toCallDto(updated) };
+}
