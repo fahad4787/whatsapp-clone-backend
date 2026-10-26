@@ -23,6 +23,7 @@ import { peopleRoutes } from "./routes/people.js";
 import { reportRoutes } from "./routes/reports.js";
 import { blockRoutes } from "./routes/blocks.js";
 import { callRoutes } from "./routes/calls.js";
+import { scheduledCallRoutes } from "./routes/scheduledCalls.js";
 import { wsRoutes } from "./routes/ws.js";
 import { initFcm } from "./push/fcm.js";
 
@@ -78,6 +79,7 @@ export async function buildApp() {
   await app.register(reportRoutes);
   await app.register(blockRoutes);
   await app.register(callRoutes);
+  await app.register(scheduledCallRoutes);
   await app.register(wsRoutes);
 
   initFcm();

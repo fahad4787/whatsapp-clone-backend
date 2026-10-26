@@ -5,6 +5,7 @@ import { prisma } from "../db.js";
 import { livekitConfigured, livekitUrl, mintLivekitToken } from "../livekit.js";
 import { messageInclude, toMessageDto } from "../messages.js";
 import { requireUser } from "../plugins/auth.js";
+import { notifyIncomingCall } from "../push/fcm.js";
 import { realtimeHub } from "../realtime/hub.js";
 
 const RING_TTL_MS = 60_000;
@@ -48,7 +49,11 @@ function toCallDto(call: NonNullable<CallRow>) {
     duration_seconds: durationSeconds(call),
     expires_at: call.expiresAt?.toISOString() ?? null,
     group_title:
-      call.conversation?.type === "GROUP" ? call.conversation.title ?? "Group" : null,
+      call.conversation?.type === "GROUP"
+        ? call.conversation.title ?? "Group"
+        : call.kind === "group"
+          ? "Group call"
+          : null,
     caller: {
       id: call.initiator.id,
       name: call.initiator.displayName || call.initiator.phone,
@@ -167,11 +172,112 @@ async function postCallSystemMessage(call: NonNullable<CallRow>) {
   }
 }
 
+/** Shared LiveKit ring path used by POST /api/calls and scheduled-call start. */
+export async function createAndRingCall(opts: {
+  userId: string;
+  conversationId: string | null;
+  calleeIds: string[];
+  media: "audio" | "video";
+}): Promise<
+  | { ok: true; result: Awaited<ReturnType<typeof tokenFor>> }
+  | { ok: false; code: number; error: string }
+> {
+  if (!livekitConfigured()) {
+    return { ok: false, code: 503, error: "livekit_not_configured" };
+  }
+
+  const calleeIds = [...new Set(opts.calleeIds)].filter((id) => id !== opts.userId);
+  if (calleeIds.length === 0) {
+    return { ok: false, code: 400, error: "no_callees" };
+  }
+  if (calleeIds.length > 8) {
+    return { ok: false, code: 400, error: "too_many_callees" };
+  }
+
+  const blocks = await prisma.block.findMany({
+    where: {
+      OR: [
+        { blockerId: opts.userId, blockedId: { in: calleeIds } },
+        { blockerId: { in: calleeIds }, blockedId: opts.userId },
+      ],
+    },
+  });
+  if (blocks.length > 0) {
+    return { ok: false, code: 403, error: "blocked" };
+  }
+
+  const me = await prisma.user.findUnique({ where: { id: opts.userId } });
+  const roomName = `call_${randomUUID().replace(/-/g, "")}`;
+  const media = opts.media === "video" ? "VIDEO" : "AUDIO";
+  const expiresAt = new Date(Date.now() + RING_TTL_MS);
+
+  const call = await prisma.call.create({
+    data: {
+      kind: calleeIds.length > 1 ? "group" : "direct",
+      media,
+      conversationId: opts.conversationId,
+      initiatorId: opts.userId,
+      roomName,
+      status: "RINGING",
+      expiresAt,
+      participants: {
+        create: [
+          { userId: opts.userId, status: "JOINED", joinedAt: new Date() },
+          ...calleeIds.map((id) => ({ userId: id, status: "RINGING" as const })),
+        ],
+      },
+    },
+  });
+
+  const full = await loadCall(call.id);
+  if (!full) {
+    return { ok: false, code: 500, error: "create_failed" };
+  }
+
+  for (const calleeId of calleeIds) {
+    realtimeHub.toUser(calleeId, {
+      type: "call.incoming",
+      data: toCallDto(full),
+    });
+  }
+  void notifyIncomingCall({
+    calleeIds,
+    callId: full.id,
+    media: full.media.toLowerCase(),
+    callerName: full.initiator.displayName || full.initiator.phone || "Aivora",
+    conversationId: full.conversationId,
+  }).catch(() => undefined);
+
+  setTimeout(() => {
+    void (async () => {
+      const current = await prisma.call.findUnique({ where: { id: call.id } });
+      if (!current || current.status !== "RINGING") return;
+      const ended = await prisma.call.update({
+        where: { id: call.id },
+        data: {
+          status: "MISSED",
+          endReason: "timeout",
+          endedAt: new Date(),
+        },
+      });
+      await prisma.callParticipant.updateMany({
+        where: { callId: call.id, status: "RINGING" },
+        data: { status: "MISSED", leftAt: new Date() },
+      });
+      const dto = await loadCall(ended.id);
+      if (dto) {
+        notifyParticipants(dto, "call.ended", undefined, { end_reason: "timeout" });
+        await postCallSystemMessage(dto);
+      }
+    })();
+  }, RING_TTL_MS);
+
+  const result = await tokenFor(opts.userId, full, me?.displayName);
+  return { ok: true, result };
+}
+
 export async function callRoutes(app: FastifyInstance) {
   app.post("/api/calls", { preHandler: requireUser }, async (req, reply) => {
-    if (!livekitConfigured()) {
-      return reply.code(503).send({ error: "livekit_not_configured" });
-    }
     const userId = (req as typeof req & { userId: string }).userId;
     const parsed = z
       .object({
@@ -201,92 +307,20 @@ export async function callRoutes(app: FastifyInstance) {
       calleeIds = members.map((m) => m.userId).filter((id) => id !== userId);
     } else if (parsed.data.user_ids?.length) {
       calleeIds = [...new Set(parsed.data.user_ids)].filter((id) => id !== userId);
-      if (calleeIds.length === 0) {
-        return reply.code(400).send({ error: "no_callees" });
-      }
     } else {
       return reply.code(400).send({ error: "conversation_or_users_required" });
     }
 
-    if (calleeIds.length === 0) {
-      return reply.code(400).send({ error: "no_callees" });
-    }
-
-    // Blocked either way → refuse.
-    const blocks = await prisma.block.findMany({
-      where: {
-        OR: [
-          { blockerId: userId, blockedId: { in: calleeIds } },
-          { blockerId: { in: calleeIds }, blockedId: userId },
-        ],
-      },
+    const started = await createAndRingCall({
+      userId,
+      conversationId,
+      calleeIds,
+      media: parsed.data.media,
     });
-    if (blocks.length > 0) {
-      return reply.code(403).send({ error: "blocked" });
+    if (!started.ok) {
+      return reply.code(started.code).send({ error: started.error });
     }
-
-    const me = await prisma.user.findUnique({ where: { id: userId } });
-    const roomName = `call_${randomUUID().replace(/-/g, "")}`;
-    const media = parsed.data.media === "video" ? "VIDEO" : "AUDIO";
-    const expiresAt = new Date(Date.now() + RING_TTL_MS);
-
-    const call = await prisma.call.create({
-      data: {
-        kind: calleeIds.length > 1 ? "group" : "direct",
-        media,
-        conversationId,
-        initiatorId: userId,
-        roomName,
-        status: "RINGING",
-        expiresAt,
-        participants: {
-          create: [
-            { userId, status: "JOINED", joinedAt: new Date() },
-            ...calleeIds.map((id) => ({ userId: id, status: "RINGING" as const })),
-          ],
-        },
-      },
-    });
-
-    const full = await loadCall(call.id);
-    if (!full) {
-      return reply.code(500).send({ error: "create_failed" });
-    }
-
-    for (const calleeId of calleeIds) {
-      realtimeHub.toUser(calleeId, {
-        type: "call.incoming",
-        data: toCallDto(full),
-      });
-    }
-
-    // Auto-miss if nobody answers.
-    setTimeout(() => {
-      void (async () => {
-        const current = await prisma.call.findUnique({ where: { id: call.id } });
-        if (!current || current.status !== "RINGING") return;
-        const ended = await prisma.call.update({
-          where: { id: call.id },
-          data: {
-            status: "MISSED",
-            endReason: "timeout",
-            endedAt: new Date(),
-          },
-        });
-        await prisma.callParticipant.updateMany({
-          where: { callId: call.id, status: "RINGING" },
-          data: { status: "MISSED", leftAt: new Date() },
-        });
-        const dto = await loadCall(ended.id);
-        if (dto) {
-          notifyParticipants(dto, "call.ended", undefined, { end_reason: "timeout" });
-          await postCallSystemMessage(dto);
-        }
-      })();
-    }, RING_TTL_MS);
-
-    const result = await tokenFor(userId, full, me?.displayName);
-    return reply.code(201).send(result);
+    return reply.code(201).send(started.result);
   });
 
   app.get("/api/calls/history", { preHandler: requireUser }, async (req) => {

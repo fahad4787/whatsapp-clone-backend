@@ -115,3 +115,143 @@ export async function notifyNewMessage(opts: {
     }
   });
 }
+
+/** Wake callees who have no open WebSocket (cold start / background). */
+export async function notifyIncomingCall(opts: {
+  calleeIds: string[];
+  callId: string;
+  media: string;
+  callerName: string;
+  conversationId: string | null;
+}) {
+  const offlineIds = opts.calleeIds.filter((id) => !realtimeHub.isOnline(id));
+  if (offlineIds.length === 0) return;
+
+  const devices = await prisma.device.findMany({
+    where: {
+      userId: { in: offlineIds },
+      pushToken: { not: null },
+    },
+    select: { pushToken: true },
+  });
+  const tokens = devices
+    .map((d) => d.pushToken)
+    .filter((t): t is string => Boolean(t));
+  if (tokens.length === 0) return;
+
+  if (!fcmEnabled() || !app) {
+    console.info("[fcm] skip incoming call (not configured)", {
+      callId: opts.callId,
+      tokens: tokens.length,
+    });
+    return;
+  }
+
+  const media = opts.media === "video" ? "video" : "audio";
+  const body =
+    media === "video"
+      ? `${opts.callerName} is video calling…`
+      : `${opts.callerName} is calling…`;
+
+  const res: BatchResponse = await getMessaging(app).sendEachForMulticast({
+    tokens,
+    notification: {
+      title: "Incoming call",
+      body,
+    },
+    data: {
+      type: "call",
+      call_id: opts.callId,
+      media,
+      caller_name: opts.callerName.slice(0, 80),
+      conversation_id: opts.conversationId ?? "",
+      title: "Incoming call",
+      preview: body,
+    },
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "calls",
+        priority: "max",
+        defaultSound: true,
+        defaultVibrateTimings: true,
+      },
+    },
+  });
+
+  res.responses.forEach((r, i) => {
+    if (!r.success && r.error?.code === "messaging/registration-token-not-registered") {
+      const token = tokens[i];
+      void prisma.device.updateMany({
+        where: { pushToken: token },
+        data: { pushToken: null },
+      });
+    }
+  });
+}
+
+/** Thin wake for offline invitees when a scheduled call is created. */
+export async function notifyScheduledCallInvite(opts: {
+  inviteeIds: string[];
+  title: string;
+  organizerName: string;
+  scheduledCallId: string;
+  startsAt: string;
+}) {
+  const offlineIds = opts.inviteeIds.filter((id) => !realtimeHub.isOnline(id));
+  if (offlineIds.length === 0) return;
+
+  const devices = await prisma.device.findMany({
+    where: {
+      userId: { in: offlineIds },
+      pushToken: { not: null },
+    },
+    select: { pushToken: true },
+  });
+  const tokens = devices
+    .map((d) => d.pushToken)
+    .filter((t): t is string => Boolean(t));
+  if (tokens.length === 0) return;
+
+  if (!fcmEnabled() || !app) {
+    console.info("[fcm] skip scheduled invite (not configured)", {
+      scheduledCallId: opts.scheduledCallId,
+      tokens: tokens.length,
+    });
+    return;
+  }
+
+  const body = `${opts.organizerName} invited you: ${opts.title}`;
+  const res: BatchResponse = await getMessaging(app).sendEachForMulticast({
+    tokens,
+    notification: {
+      title: "Scheduled call",
+      body,
+    },
+    data: {
+      type: "scheduled_call",
+      scheduled_call_id: opts.scheduledCallId,
+      starts_at: opts.startsAt,
+      title: "Scheduled call",
+      preview: body.slice(0, 120),
+    },
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "messages",
+        priority: "high",
+        defaultSound: true,
+      },
+    },
+  });
+
+  res.responses.forEach((r, i) => {
+    if (!r.success && r.error?.code === "messaging/registration-token-not-registered") {
+      const token = tokens[i];
+      void prisma.device.updateMany({
+        where: { pushToken: token },
+        data: { pushToken: null },
+      });
+    }
+  });
+}

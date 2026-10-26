@@ -47,6 +47,8 @@ model User {
   blocksReceived  Block[]              @relation("BlocksReceived")
   callsInitiated  Call[]               @relation("CallsInitiated")
   callParticipants CallParticipant[]
+  scheduledCallsOrganized ScheduledCall[] @relation("ScheduledCallsOrganized")
+  scheduledCallParticipants ScheduledCallParticipant[]
 }
 
 model Block {
@@ -148,6 +150,7 @@ model Conversation {
   members  ConversationMember[]
   messages Message[]
   calls    Call[]
+  scheduledCalls ScheduledCall[]
 }
 
 enum MessageType {
@@ -344,6 +347,53 @@ model CallParticipant {
   createdAt DateTime              @default(now())
 
   @@unique([callId, userId])
+  @@index([userId])
+}
+
+enum ScheduledCallStatus {
+  UPCOMING
+  COMPLETED
+  CANCELLED
+}
+
+enum ScheduledCallInviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+model ScheduledCall {
+  id              String              @id @default(cuid())
+  title           String
+  media           CallMedia           @default(AUDIO)
+  startsAt        DateTime
+  durationMinutes Int                 @default(30)
+  reminderMinutes Int                 @default(10)
+  organizerId     String
+  organizer       User                @relation("ScheduledCallsOrganized", fields: [organizerId], references: [id], onDelete: Cascade)
+  conversationId  String?
+  conversation    Conversation?       @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  status          ScheduledCallStatus @default(UPCOMING)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  participants    ScheduledCallParticipant[]
+
+  @@index([organizerId, startsAt])
+  @@index([status, startsAt])
+  @@index([conversationId])
+}
+
+model ScheduledCallParticipant {
+  id              String                    @id @default(cuid())
+  scheduledCallId String
+  scheduledCall   ScheduledCall             @relation(fields: [scheduledCallId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status          ScheduledCallInviteStatus @default(PENDING)
+  respondedAt     DateTime?
+  createdAt       DateTime                  @default(now())
+
+  @@unique([scheduledCallId, userId])
   @@index([userId])
 }
 
