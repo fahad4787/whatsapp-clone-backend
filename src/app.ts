@@ -16,6 +16,11 @@ import { adminReportRoutes } from "./routes/admin/reports.js";
 import { adminMetricsRoutes } from "./routes/admin/metrics.js";
 import { adminConversationRoutes } from "./routes/admin/conversations.js";
 import { adminCallRoutes } from "./routes/admin/calls.js";
+import { adminSettingsRoutes } from "./routes/admin/settings.js";
+import { adminCountryRoutes } from "./routes/admin/countries.js";
+import { adminAuditRoutes } from "./routes/admin/audit.js";
+import { adminAdminsRoutes } from "./routes/admin/admins.js";
+import { appConfigRoutes } from "./routes/appConfig.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { messageRoutes } from "./routes/messages.js";
 import { mediaRoutes } from "./routes/media.js";
@@ -66,6 +71,7 @@ export async function buildApp() {
   });
 
   await app.register(healthRoutes);
+  await app.register(appConfigRoutes);
   await app.register(authRoutes);
   await app.register(meRoutes);
   await app.register(adminAuthRoutes);
@@ -75,6 +81,10 @@ export async function buildApp() {
   await app.register(adminMetricsRoutes);
   await app.register(adminConversationRoutes);
   await app.register(adminCallRoutes);
+  await app.register(adminSettingsRoutes);
+  await app.register(adminCountryRoutes);
+  await app.register(adminAuditRoutes);
+  await app.register(adminAdminsRoutes);
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
   await app.register(mediaRoutes);

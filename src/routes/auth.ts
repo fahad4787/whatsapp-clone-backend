@@ -9,6 +9,7 @@ import {
   toE164,
 } from "../auth/crypto.js";
 import { bearerFromHeader, signAccessToken, verifyAccessToken } from "../auth/jwt.js";
+import { getAppSettings, isCountryAllowed } from "../services/appConfig.js";
 
 const requestBody = z.object({
   country: z.string().min(1),
@@ -40,6 +41,14 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     }
 
+    const settings = await getAppSettings();
+    if (settings.maintenance_mode) {
+      return reply.code(503).send({ error: "maintenance" });
+    }
+    if (!(await isCountryAllowed(parsed.data.country))) {
+      return reply.code(403).send({ error: "country_disabled" });
+    }
+
     let phone: string;
     try {
       phone = toE164(parsed.data.country, parsed.data.national_number);
@@ -47,14 +56,17 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "invalid_phone" });
     }
 
+    const otpGap = Number(settings.otp_gap) || config.otpResendSec;
+    const otpTtl = Number(settings.otp_expiry) || config.otpTtlSec;
+
     const recent = await prisma.otpChallenge.findFirst({
       where: { phone },
       orderBy: { createdAt: "desc" },
     });
     if (recent) {
       const elapsedSec = (Date.now() - recent.createdAt.getTime()) / 1000;
-      if (elapsedSec < config.otpResendSec && !recent.consumedAt) {
-        const wait = Math.ceil(config.otpResendSec - elapsedSec);
+      if (elapsedSec < otpGap && !recent.consumedAt) {
+        const wait = Math.ceil(otpGap - elapsedSec);
         return reply.code(429).send({
           error: "rate_limited",
           resend_in: wait,
@@ -77,7 +89,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const code = generateOtpCode();
-    const expiresAt = new Date(Date.now() + config.otpTtlSec * 1000);
+    const expiresAt = new Date(Date.now() + otpTtl * 1000);
     await prisma.otpChallenge.create({
       data: {
         phone,
@@ -92,8 +104,8 @@ export async function authRoutes(app: FastifyInstance) {
 
     return {
       phone,
-      expires_in: config.otpTtlSec,
-      resend_in: config.otpResendSec,
+      expires_in: otpTtl,
+      resend_in: otpGap,
     };
   });
 

@@ -483,3 +483,23 @@ model Report {
   @@index([reporterId])
   @@index([targetUserId])
 }
+
+/** Singleton ops settings (Wave 20) — JSON blob matches admin SettingsMap. */
+model AppConfig {
+  id        String   @id @default("default")
+  data      Json
+  updatedAt DateTime @updatedAt
+}
+
+/** Dial-code allowlist for signup (Wave 20). */
+model Country {
+  iso       String   @id
+  name      String
+  dial      String
+  enabled   Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, sortOrder])
+}
