@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { config } from "../config.js";
 import { prisma } from "../db.js";
 import { livekitConfigured, livekitUrl, mintLivekitToken } from "../livekit.js";
 import { requireUser } from "../plugins/auth.js";
@@ -12,9 +13,10 @@ function shortCode(): string {
   return randomBytes(5).toString("base64url").replace(/=+$/, "").slice(0, 8);
 }
 
+/** Staging share URL — PUBLIC_BASE_URL (Render API), not wa.zirvik.com / admin. */
 function shareUrl(code: string): string {
-  // Deep link host matches Android intent-filter (wa.zirvik.com).
-  return `https://wa.zirvik.com/call/${code}`;
+  const base = config.publicBaseUrl.replace(/\/+$/, "");
+  return `${base}/call/${code}`;
 }
 
 function toLinkDto(link: {
