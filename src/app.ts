@@ -24,6 +24,7 @@ import { peopleRoutes } from "./routes/people.js";
 import { reportRoutes } from "./routes/reports.js";
 import { blockRoutes } from "./routes/blocks.js";
 import { callRoutes } from "./routes/calls.js";
+import { callLinkRoutes } from "./routes/callLinks.js";
 import { scheduledCallRoutes } from "./routes/scheduledCalls.js";
 import { statusRoutes } from "./routes/status.js";
 import { wsRoutes } from "./routes/ws.js";
@@ -82,6 +83,7 @@ export async function buildApp() {
   await app.register(reportRoutes);
   await app.register(blockRoutes);
   await app.register(callRoutes);
+  await app.register(callLinkRoutes);
   await app.register(scheduledCallRoutes);
   await app.register(statusRoutes);
   await app.register(wsRoutes);

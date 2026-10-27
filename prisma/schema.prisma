@@ -51,6 +51,7 @@ model User {
   blocksReceived  Block[]              @relation("BlocksReceived")
   callsInitiated  Call[]               @relation("CallsInitiated")
   callParticipants CallParticipant[]
+  callLinksCreated CallLink[]          @relation("CallLinksCreated")
   scheduledCallsOrganized ScheduledCall[] @relation("ScheduledCallsOrganized")
   scheduledCallParticipants ScheduledCallParticipant[]
   statuses        Status[]
@@ -335,10 +336,28 @@ model Call {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
   participants   CallParticipant[]
+  linkSessions   CallLink[]        @relation("CallLinkActiveCall")
 
   @@index([status, createdAt])
   @@index([initiatorId])
   @@index([conversationId])
+}
+
+/** Shareable join link — no prior chat required (Wave 19). */
+model CallLink {
+  id           String    @id @default(cuid())
+  code         String    @unique
+  media        CallMedia @default(AUDIO)
+  title        String?
+  creatorId    String
+  creator      User      @relation("CallLinksCreated", fields: [creatorId], references: [id], onDelete: Cascade)
+  activeCallId String?
+  activeCall   Call?     @relation("CallLinkActiveCall", fields: [activeCallId], references: [id], onDelete: SetNull)
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+
+  @@index([creatorId])
+  @@index([expiresAt])
 }
 
 model CallParticipant {
