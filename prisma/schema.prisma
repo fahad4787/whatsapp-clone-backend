@@ -38,6 +38,10 @@ model User {
   statusPrivacy    String @default("contacts")
   /// User ids for contacts_except / only_share
   statusPrivacyIds Json?
+  /// bcrypt hash of 6-digit two-step PIN (Wave 22)
+  twoStepPinHash   String?
+  twoStepEnabledAt DateTime?
+  twoStepEmail     String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -77,6 +81,8 @@ model OtpChallenge {
   codeHash   String
   /// Plain code for admin viewer when OTP_DEV_BYPASS=1 only. Null in real SMS mode.
   devCode    String?
+  /// login (default) | change_number
+  purpose    String    @default("login")
   expiresAt  DateTime
   attempts   Int       @default(0)
   consumedAt DateTime?

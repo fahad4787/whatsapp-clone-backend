@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import Fastify from "fastify";
+import compress from "@fastify/compress";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
@@ -51,6 +52,13 @@ export async function buildApp() {
     origin: config.corsOrigin.split(",").map((s: string) => s.trim()),
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  });
+
+  // Brotli + gzip for JSON responses (clients advertise Accept-Encoding).
+  await app.register(compress, {
+    global: true,
+    encodings: ["br", "gzip", "deflate"],
+    threshold: 1024,
   });
 
   await app.register(websocket, {

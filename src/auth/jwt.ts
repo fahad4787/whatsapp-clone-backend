@@ -12,6 +12,16 @@ export type AdminClaims = {
   role: string;
 };
 
+export type TwoStepChallengeClaims = {
+  sub: string;
+  typ: "two_step";
+  device?: {
+    platform?: string;
+    device_name?: string;
+    app_version?: string;
+  };
+};
+
 export function signAccessToken(userId: string): string {
   return jwt.sign({ typ: "access" } satisfies Omit<AccessClaims, "sub">, config.jwtAccessSecret, {
     subject: userId,
@@ -25,6 +35,30 @@ export function verifyAccessToken(token: string): AccessClaims {
     throw new Error("Invalid access token");
   }
   return { sub: payload.sub, typ: "access" };
+}
+
+/** Short-lived challenge after OTP when two-step PIN is enabled. */
+export function signTwoStepChallenge(
+  userId: string,
+  device?: TwoStepChallengeClaims["device"],
+): string {
+  return jwt.sign(
+    { typ: "two_step", device } satisfies Omit<TwoStepChallengeClaims, "sub">,
+    config.jwtAccessSecret,
+    { subject: userId, expiresIn: 600 },
+  );
+}
+
+export function verifyTwoStepChallenge(token: string): TwoStepChallengeClaims {
+  const payload = jwt.verify(token, config.jwtAccessSecret) as jwt.JwtPayload;
+  if (payload.typ !== "two_step" || typeof payload.sub !== "string") {
+    throw new Error("Invalid two-step challenge");
+  }
+  const device =
+    payload.device && typeof payload.device === "object"
+      ? (payload.device as TwoStepChallengeClaims["device"])
+      : undefined;
+  return { sub: payload.sub, typ: "two_step", device };
 }
 
 export function signAdminToken(adminId: string, role: string): string {

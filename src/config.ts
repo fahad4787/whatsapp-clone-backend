@@ -22,6 +22,11 @@ export const config = {
   otpTtlSec: Number(process.env.OTP_TTL_SEC ?? 300),
   otpResendSec: Number(process.env.OTP_RESEND_SEC ?? 60),
   otpDevBypass: (process.env.OTP_DEV_BYPASS ?? "1") === "1",
+  /** twilio | none — real SMS only when sms_enabled admin setting is also on. */
+  smsProvider: (process.env.SMS_PROVIDER ?? "none").toLowerCase(),
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ?? "",
+  twilioFromNumber: process.env.TWILIO_FROM_NUMBER ?? "",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:3000",
   publicBaseUrl:
     process.env.PUBLIC_BASE_URL ??

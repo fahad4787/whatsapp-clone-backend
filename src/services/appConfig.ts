@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
+import { config } from "../config.js";
 import { prisma } from "../db.js";
+import { canSendSms } from "./sms.js";
 
 /** Defaults aligned with aivora-admin SettingsMap / seed. */
 export const DEFAULT_APP_SETTINGS = {
@@ -123,6 +125,7 @@ export async function isCountryAllowed(countryInput: string): Promise<boolean> {
 }
 
 export function toPublicConfig(settings: AppSettings, countries: Awaited<ReturnType<typeof listCountries>>) {
+  const smsLive = canSendSms(Boolean(settings.sms_enabled));
   return {
     maintenance_mode: Boolean(settings.maintenance_mode),
     latest_android_version: String(settings.latest_android_version),
@@ -135,6 +138,8 @@ export function toPublicConfig(settings: AppSettings, countries: Awaited<ReturnT
     max_group_size: Number(settings.max_group_size),
     max_group_call_participants: Number(settings.max_group_call_participants),
     upload_limit_mb: Number(settings.upload_limit_mb),
+    sms_enabled: smsLive,
+    otp_dev_bypass: !smsLive && config.otpDevBypass,
     countries: countries.map((c) => ({
       iso: c.iso,
       name: c.name,

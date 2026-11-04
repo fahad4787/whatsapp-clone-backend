@@ -66,4 +66,28 @@ describe("devices / push token", () => {
     });
     expect(row).toBeTruthy();
   });
+
+  it("revokes a device via DELETE", async () => {
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/me/devices",
+      headers: { authorization: `Bearer ${access}` },
+    });
+    const id = list.json().items[0]?.id as string | undefined;
+    expect(id).toBeTruthy();
+
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/me/devices/${id}`,
+      headers: { authorization: `Bearer ${access}` },
+    });
+    expect(del.statusCode).toBe(204);
+
+    const after = await app.inject({
+      method: "GET",
+      url: "/api/me/devices",
+      headers: { authorization: `Bearer ${access}` },
+    });
+    expect(after.json().items.every((d: { id: string }) => d.id !== id)).toBe(true);
+  });
 });

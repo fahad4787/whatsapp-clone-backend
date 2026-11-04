@@ -10,14 +10,15 @@ function toDeviceDto(d: {
   pushToken: string | null;
   createdAt: Date;
   updatedAt: Date;
-}) {
+}, isCurrent = false) {
   return {
     id: d.id,
-    name: d.name,
     platform: d.platform,
-    has_push_token: Boolean(d.pushToken),
+    device_name: d.name,
+    last_active_at: d.updatedAt.toISOString(),
     created_at: d.createdAt.toISOString(),
-    updated_at: d.updatedAt.toISOString(),
+    is_current: isCurrent,
+    has_push_token: Boolean(d.pushToken),
   };
 }
 
@@ -28,7 +29,8 @@ export async function deviceRoutes(app: FastifyInstance) {
       where: { userId },
       orderBy: { updatedAt: "desc" },
     });
-    return { items: rows.map(toDeviceDto) };
+    const latestId = rows[0]?.id;
+    return { items: rows.map((d) => toDeviceDto(d, d.id === latestId)) };
   });
 
   /** Register / refresh FCM token on the current user's latest (or new) device. */
@@ -77,7 +79,7 @@ export async function deviceRoutes(app: FastifyInstance) {
           },
         });
 
-    return toDeviceDto(device);
+    return toDeviceDto(device, true);
   });
 
   app.patch("/api/me/devices/:id/push-token", { preHandler: requireUser }, async (req, reply) => {
@@ -114,5 +116,22 @@ export async function deviceRoutes(app: FastifyInstance) {
       data: { pushToken: null },
     });
     return toDeviceDto(device);
+  });
+
+  /** Revoke a linked device: clear push, revoke refresh tokens tied to it, delete row. */
+  app.delete("/api/me/devices/:id", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const existing = await prisma.device.findFirst({ where: { id, userId } });
+    if (!existing) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    await prisma.refreshToken.updateMany({
+      where: { userId, deviceId: id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await prisma.device.delete({ where: { id } });
+    return reply.code(204).send();
   });
 }
