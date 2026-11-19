@@ -7,6 +7,7 @@ import { z } from "zod";
 import { isBlockedEitherWay } from "../blocks.js";
 import { directKeyFor, toConversationDtoAsync } from "../conversations.js";
 import { prisma } from "../db.js";
+import { mirrorUpload } from "../fileStore.js";
 import {
   buildChatExport,
   createExportZipStream,
@@ -498,6 +499,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       await unlink(diskPath).catch(() => undefined);
       return reply.code(413).send({ error: "file_too_large" });
     }
+    await mirrorUpload(`group-avatars/${filename}`, diskPath, file.mimetype);
     const avatarUrl = publicUrl(`/uploads/group-avatars/${filename}`);
     if (conv.avatarUrl?.includes("/uploads/group-avatars/")) {
       const oldName = conv.avatarUrl.split("/uploads/group-avatars/").pop();

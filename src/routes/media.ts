@@ -8,6 +8,7 @@ import { z } from "zod";
 import { extFromMime, isAllowedMime, MAX_UPLOAD_BYTES } from "../mediaTypes.js";
 import { requireUser } from "../plugins/auth.js";
 import { publicUrl } from "../publicUrl.js";
+import { mirrorUpload } from "../fileStore.js";
 
 const MEDIA_DIR = path.join(process.cwd(), "uploads", "media");
 mkdirSync(MEDIA_DIR, { recursive: true });
@@ -106,6 +107,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "upload_failed" });
     }
 
+    await mirrorUpload(`media/${key}`, diskPath, mime);
     return {
       key,
       url: publicUrl(`/uploads/media/${key}`),
@@ -140,6 +142,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       return reply.code(413).send({ error: "file_too_large" });
     }
 
+    await mirrorUpload(`media/${key}`, diskPath, mime);
     return {
       key,
       url: publicUrl(`/uploads/media/${key}`),

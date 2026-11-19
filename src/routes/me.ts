@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
+import { mirrorUpload } from "../fileStore.js";
 import {
   generateOtpCode,
   hashPassword,
@@ -499,6 +500,7 @@ export async function meRoutes(app: FastifyInstance) {
       return reply.code(413).send({ error: "file_too_large" });
     }
 
+    await mirrorUpload(`avatars/${filename}`, diskPath, file.mimetype);
     const avatarUrl = publicUrl(`/uploads/avatars/${filename}`);
     const existing = await prisma.user.findUnique({ where: { id: userId } });
     if (existing?.avatarUrl?.includes("/uploads/avatars/")) {

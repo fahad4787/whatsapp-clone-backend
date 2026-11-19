@@ -687,3 +687,11 @@ model CommunityGroupLink {
   @@unique([communityId, conversationId])
   @@index([conversationId])
 }
+
+/// Durable copy of files written under uploads/ (Render's disk is wiped on every deploy).
+model UploadedFile {
+  path      String   @id
+  mime      String
+  data      Bytes
+  createdAt DateTime @default(now())
+}

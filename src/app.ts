@@ -45,6 +45,7 @@ import { communityRoutes } from "./routes/communities.js";
 import { stickerRoutes } from "./routes/stickers.js";
 import { wsRoutes } from "./routes/ws.js";
 import { initFcm } from "./push/fcm.js";
+import { loadUpload } from "./fileStore.js";
 
 const uploadsRoot = path.join(process.cwd(), "uploads");
 mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
@@ -86,6 +87,24 @@ export async function buildApp() {
     root: uploadsRoot,
     prefix: "/uploads/",
     decorateReply: false,
+  });
+
+  // Files missing on disk (after a redeploy) are restored from Postgres.
+  app.setNotFoundHandler(async (req, reply) => {
+    const urlPath = req.url.split("?")[0];
+    if (req.method === "GET" && urlPath.startsWith("/uploads/")) {
+      const rel = decodeURIComponent(urlPath.slice("/uploads/".length));
+      if (!rel.includes("..")) {
+        const row = await loadUpload(rel);
+        if (row) {
+          return reply
+            .header("Content-Type", row.mime)
+            .header("Cache-Control", "public, max-age=86400")
+            .send(Buffer.from(row.data));
+        }
+      }
+    }
+    return reply.code(404).send({ error: "not_found" });
   });
 
   await app.register(healthRoutes);
