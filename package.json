@@ -42,6 +42,8 @@
     "ioredis": "^5.7.0",
     "jsonwebtoken": "^9.0.2",
     "livekit-server-sdk": "^2.19.2",
+    "nodemailer": "^10.3.1",
+    "otpauth": "^9.6.0",
     "prisma": "^6.16.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
@@ -49,6 +51,7 @@
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
+    "@types/nodemailer": "^8.0.2",
     "@typescript-eslint/eslint-plugin": "^8.44.1",
     "@typescript-eslint/parser": "^8.44.1",
     "eslint": "^9.36.0",

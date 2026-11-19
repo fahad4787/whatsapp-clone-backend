@@ -62,6 +62,14 @@ type LocationPayload = {
   lng: number;
   address?: string | null;
   name?: string | null;
+  /** Wave 26 — live share */
+  live?: boolean;
+  accuracy?: number | null;
+  duration_seconds?: number | null;
+  started_at?: string | null;
+  expires_at?: string | null;
+  ended?: boolean;
+  updated_at?: string | null;
 };
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -198,12 +206,29 @@ export function buildLocationPayload(input: {
   lng: number;
   address?: string | null;
   name?: string | null;
+  live?: boolean;
+  accuracy?: number | null;
+  duration_seconds?: number | null;
 }): LocationPayload {
+  const now = new Date();
+  const live = Boolean(input.live);
+  const duration = live
+    ? Math.min(Math.max(Number(input.duration_seconds) || 900, 60), 8 * 3600)
+    : null;
+  const expiresAt =
+    live && duration ? new Date(now.getTime() + duration * 1000).toISOString() : null;
   return {
     lat: input.lat,
     lng: input.lng,
     address: input.address ?? null,
-    name: input.name ?? null,
+    name: live ? input.name ?? "Live location" : input.name ?? null,
+    live,
+    accuracy: input.accuracy ?? null,
+    duration_seconds: duration,
+    started_at: live ? now.toISOString() : null,
+    expires_at: expiresAt,
+    ended: false,
+    updated_at: live ? now.toISOString() : null,
   };
 }
 
@@ -213,11 +238,14 @@ export function previewForRichType(type: MessageType, payload: unknown): string 
     case "CONTACT":
       return p?.name ? `Contact · ${p.name}` : "Contact";
     case "LOCATION":
+      if (p?.live && !p?.ended) return "Live location";
       return p?.name || p?.address ? `Location · ${p.name || p.address}` : "Location";
     case "POLL":
       return p?.question ? `Poll · ${p.question}` : "Poll";
     case "EVENT":
       return p?.title ? `Event · ${p.title}` : "Event";
+    case "STICKER":
+      return p?.emoji ? String(p.emoji) : "Sticker";
     default:
       return "Message";
   }
@@ -268,11 +296,40 @@ export function toMessageDto(msg: MessageWithExtras, viewerId?: string) {
         : null,
     location:
       type === "LOCATION" && payload
+        ? (() => {
+            const loc = asRecord(payload) ?? {};
+            const ended = Boolean(loc.ended);
+            const expiresAt = loc.expires_at ? String(loc.expires_at) : null;
+            const expired =
+              Boolean(loc.live) &&
+              !ended &&
+              expiresAt != null &&
+              Date.parse(expiresAt) <= Date.now();
+            return {
+              lat: Number(loc.lat ?? 0),
+              lng: Number(loc.lng ?? 0),
+              address: (loc.address as string | null) ?? null,
+              name: (loc.name as string | null) ?? null,
+              live: Boolean(loc.live) && !ended && !expired,
+              accuracy: loc.accuracy == null ? null : Number(loc.accuracy),
+              duration_seconds:
+                loc.duration_seconds == null ? null : Number(loc.duration_seconds),
+              started_at: loc.started_at == null ? null : String(loc.started_at),
+              expires_at: expiresAt,
+              ended: ended || expired,
+              updated_at: loc.updated_at == null ? null : String(loc.updated_at),
+            };
+          })()
+        : null,
+    sticker:
+      type === "STICKER" && payload
         ? {
-            lat: Number(asRecord(payload)?.lat ?? 0),
-            lng: Number(asRecord(payload)?.lng ?? 0),
-            address: (asRecord(payload)?.address as string | null) ?? null,
-            name: (asRecord(payload)?.name as string | null) ?? null,
+            id: String(asRecord(payload)?.sticker_id ?? ""),
+            emoji: String(asRecord(payload)?.emoji ?? msg.text ?? ""),
+            label: (asRecord(payload)?.label as string | null) ?? null,
+            pack_id: (asRecord(payload)?.pack_id as string | null) ?? null,
+            url: null,
+            animated: false,
           }
         : null,
     client_id: msg.clientId,

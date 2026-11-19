@@ -27,6 +27,13 @@ export const config = {
   twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
   twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ?? "",
   twilioFromNumber: process.env.TWILIO_FROM_NUMBER ?? "",
+  /** Wave 55 — optional SMTP for email OTP (host + from required). */
+  smtpHost: process.env.SMTP_HOST ?? "",
+  smtpPort: Number(process.env.SMTP_PORT ?? 587),
+  smtpSecure: (process.env.SMTP_SECURE ?? "0") === "1",
+  smtpUser: process.env.SMTP_USER ?? "",
+  smtpPass: process.env.SMTP_PASS ?? "",
+  smtpFrom: process.env.SMTP_FROM ?? "",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:3000",
   publicBaseUrl:
     process.env.PUBLIC_BASE_URL ??

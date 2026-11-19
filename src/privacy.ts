@@ -53,3 +53,40 @@ export async function touchLastSeen(userId: string) {
     data: { lastSeenAt: new Date() },
   });
 }
+
+/** Wave 39 — who may open target via profile QR / deep link. */
+export async function canOpenProfileLink(
+  viewerId: string,
+  targetId: string,
+): Promise<boolean> {
+  if (viewerId === targetId) return false;
+  const target = await prisma.user.findUnique({
+    where: { id: targetId },
+    select: { linksPrivacy: true, bannedAt: true },
+  });
+  if (!target || target.bannedAt) return false;
+  if (target.linksPrivacy === "nobody") return false;
+  if (target.linksPrivacy === "everyone") return true;
+  // contacts = share a DIRECT conversation
+  const key = [viewerId, targetId].sort().join(":");
+  const direct = await prisma.conversation.findUnique({ where: { directKey: key } });
+  return Boolean(direct);
+}
+
+/** Wave 39 — both parties must allow read receipts (WhatsApp-style reciprocal). */
+export async function allowReadReceipts(
+  readerId: string,
+  peerId: string | null | undefined,
+): Promise<boolean> {
+  const reader = await prisma.user.findUnique({
+    where: { id: readerId },
+    select: { readReceipts: true },
+  });
+  if (!reader?.readReceipts) return false;
+  if (!peerId) return true;
+  const peer = await prisma.user.findUnique({
+    where: { id: peerId },
+    select: { readReceipts: true },
+  });
+  return peer?.readReceipts !== false;
+}

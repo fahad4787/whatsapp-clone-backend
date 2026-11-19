@@ -77,11 +77,15 @@ function lineBody(m: ExportMessage, includeMedia: boolean, mediaZipName: string 
   switch (m.type) {
     case "TEXT":
       return m.text?.trim() || "";
+    case "STICKER": {
+      const emoji = String(payload?.emoji ?? m.text ?? "Sticker").trim();
+      return emoji || "Sticker";
+    }
     case "IMAGE":
     case "VIDEO":
     case "AUDIO":
-    case "DOCUMENT":
-    case "STICKER": {
+    case "FILE":
+    case "DOCUMENT": {
       if (m.viewOnce) return "View once media";
       const label = mediaZipName
         ? `<attached: ${mediaZipName}>`
@@ -182,6 +186,35 @@ export function createExportZipStream(built: BuiltExport): PassThrough {
   archive.append(built.text, { name: "_chat.txt" });
   for (const f of built.mediaFiles) {
     archive.append(createReadStream(f.absPath), { name: f.zipName });
+  }
+  void archive.finalize();
+  return pass;
+}
+
+/** Wave 29 — multi-chat account backup zip. */
+export function createAccountBackupZipStream(
+  chats: { folder: string; built: BuiltExport }[],
+  meta: Record<string, unknown>,
+): PassThrough {
+  const pass = new PassThrough();
+  const archive = new ZipArchive({ zlib: { level: 5 } });
+  archive.on("error", (err: Error) => pass.destroy(err));
+  archive.pipe(pass);
+  archive.append(JSON.stringify(meta, null, 2) + "\n", { name: "manifest.json" });
+  const usedFolders = new Set<string>();
+  for (const chat of chats) {
+    let folder = chat.folder.replace(/[^\w.\-()+ ]+/g, "_").trim().slice(0, 60) || "chat";
+    if (usedFolders.has(folder)) {
+      let n = 2;
+      while (usedFolders.has(`${folder}_${n}`)) n += 1;
+      folder = `${folder}_${n}`;
+    }
+    usedFolders.add(folder);
+    archive.append(chat.built.text, { name: `chats/${folder}/_chat.txt` });
+    for (const f of chat.built.mediaFiles) {
+      const rel = f.zipName.replace(/^media\//, "");
+      archive.append(createReadStream(f.absPath), { name: `chats/${folder}/media/${rel}` });
+    }
   }
   void archive.finalize();
   return pass;

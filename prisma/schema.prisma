@@ -38,10 +38,40 @@ model User {
   statusPrivacy    String @default("contacts")
   /// User ids for contacts_except / only_share
   statusPrivacyIds Json?
+  /// everyone | contacts | nobody
+  profilePhotoPrivacy String @default("everyone")
+  /// everyone | contacts | nobody
+  aboutPrivacy        String @default("everyone")
+  /// everyone | contacts | contacts_except
+  groupsPrivacy       String @default("everyone")
+  silenceUnknownCallers Boolean @default(false)
+  /// Wave 39 — everyone | contacts | nobody (who can open your profile via QR / link)
+  linksPrivacy String @default("contacts")
+  /// Wave 39 — send/receive read receipts (blue ticks)
+  readReceipts Boolean @default(true)
+  /// Wave 41 — default timer for new DIRECT chats (0 | 86400 | 604800 | 7776000)
+  defaultDisappearingSeconds Int @default(0)
+  /// Wave 41 — advanced privacy
+  protectIpInCalls       Boolean @default(true)
+  disableLinkPreviews    Boolean @default(false)
+  blockUnknownMessages   Boolean @default(false)
   /// bcrypt hash of 6-digit two-step PIN (Wave 22)
   twoStepPinHash   String?
   twoStepEnabledAt DateTime?
   twoStepEmail     String?
+  /// Wave 30 — when recovery email was verified
+  emailVerifiedAt  DateTime?
+  /// bcrypt hash of chat-lock secret code (Wave 25)
+  chatLockPinHash    String?
+  chatLockEnabledAt  DateTime?
+  chatLockHideFolder Boolean @default(false)
+  /// Wave 34 — media auto-download / data prefs (photos | photos_audio | all | none)
+  autoDlMobile       String  @default("photos")
+  autoDlWifi         String  @default("all")
+  autoDlRoaming      String  @default("none")
+  lessDataCalls      Boolean @default(false)
+  /// auto | high | data_saver
+  photoUploadQuality String  @default("auto")
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -60,6 +90,50 @@ model User {
   scheduledCallParticipants ScheduledCallParticipant[]
   statuses        Status[]
   statusViews     StatusView[]
+  deviceLinkSessions DeviceLinkSession[]
+  chatLists       ChatList[]
+}
+
+/** Wave 42 — user-defined chat filter lists (Favourites-style custom). */
+model ChatList {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  members   ChatListMember[]
+
+  @@index([userId, sortOrder])
+}
+
+model ChatListMember {
+  listId         String
+  conversationId String
+  list           ChatList     @relation(fields: [listId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@id([listId, conversationId])
+  @@index([conversationId])
+}
+
+/** Wave 31 — companion device pairing (code shown on new device, approved on phone). */
+model DeviceLinkSession {
+  id         String    @id @default(cuid())
+  code       String    @unique
+  /// pending | approved | cancelled | consumed
+  status     String    @default("pending")
+  deviceName String?
+  platform   String?
+  userId     String?
+  user       User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approvedAt DateTime?
+  consumedAt DateTime?
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+
+  @@index([status, expiresAt])
 }
 
 model Block {
@@ -126,6 +200,8 @@ model AdminUser {
   passwordHash String
   displayName  String?
   role         AdminRole @default(MOD)
+  totpSecret   String?
+  totpEnabledAt DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -164,6 +240,7 @@ model Conversation {
   messages Message[]
   calls    Call[]
   scheduledCalls ScheduledCall[]
+  chatListMembers ChatListMember[]
 }
 
 enum MessageType {
@@ -176,6 +253,7 @@ enum MessageType {
   LOCATION
   POLL
   EVENT
+  STICKER
 }
 
 enum MessageStatus {
@@ -297,10 +375,13 @@ model ConversationMember {
   favoritedAt    DateTime?
   /// Client wallpaper key, e.g. "default" | "mint" | "dusk".
   wallpaper      String?
+  /// Wave 25 — chat lock (per-member)
+  lockedAt       DateTime?
 
   @@unique([conversationId, userId])
   @@index([userId])
   @@index([userId, pinnedAt])
+  @@index([userId, lockedAt])
 }
 
 enum CallMedia {
@@ -508,4 +589,101 @@ model Country {
   updatedAt DateTime @updatedAt
 
   @@index([enabled, sortOrder])
+}
+
+/** Wave 21 — broadcast channels */
+model Channel {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  avatarUrl   String?
+  verified    Boolean  @default(false)
+  listed      Boolean  @default(true)
+  ownerId     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  posts     ChannelPost[]
+  followers ChannelFollow[]
+
+  @@index([listed, updatedAt])
+}
+
+model ChannelFollow {
+  id        String   @id @default(cuid())
+  channelId String
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    String
+  muted     Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([channelId, userId])
+  @@index([userId])
+}
+
+model ChannelPost {
+  id        String    @id @default(cuid())
+  channelId String
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  authorId  String?
+  text      String
+  viewCount Int       @default(0)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  reactions ChannelPostReaction[]
+
+  @@index([channelId, createdAt])
+}
+
+model ChannelPostReaction {
+  id        String      @id @default(cuid())
+  postId    String
+  post      ChannelPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    String
+  emoji     String
+  createdAt DateTime    @default(now())
+
+  @@unique([postId, userId])
+  @@index([postId])
+}
+
+/** Wave 21 — communities shell */
+model Community {
+  id                       String   @id @default(cuid())
+  name                     String
+  description              String?
+  avatarUrl                String?
+  announcementConversationId String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  members CommunityMember[]
+  groups  CommunityGroupLink[]
+}
+
+model CommunityMember {
+  id          String    @id @default(cuid())
+  communityId String
+  community   Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  userId      String
+  role        String    @default("member")
+  createdAt   DateTime  @default(now())
+
+  @@unique([communityId, userId])
+  @@index([userId])
+}
+
+model CommunityGroupLink {
+  id             String    @id @default(cuid())
+  communityId    String
+  community      Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  conversationId String
+  title          String?
+  createdAt      DateTime  @default(now())
+
+  @@unique([communityId, conversationId])
+  @@index([conversationId])
 }

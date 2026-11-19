@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { config } from "../config.js";
@@ -5,6 +6,7 @@ import { prisma } from "../db.js";
 import {
   generateOtpCode,
   generateRefreshToken,
+  hashPassword,
   hashSha256,
   toE164,
   verifyPassword,
@@ -16,8 +18,27 @@ import {
   verifyAccessToken,
   verifyTwoStepChallenge,
 } from "../auth/jwt.js";
+import { requireUser } from "../plugins/auth.js";
 import { getAppSettings, isCountryAllowed } from "../services/appConfig.js";
+import {
+  consumeEmailOtp,
+  issueEmailOtp,
+  normalizeEmail,
+} from "../services/emailOtp.js";
+import { canSendEmail } from "../services/mail.js";
 import { canSendSms, sendOtpSms } from "../services/sms.js";
+
+const LINK_TTL_SEC = 180;
+const LINK_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateLinkCode(): string {
+  const bytes = randomBytes(8);
+  let out = "";
+  for (let i = 0; i < 8; i++) {
+    out += LINK_ALPHABET[bytes[i]! % LINK_ALPHABET.length];
+  }
+  return out;
+}
 
 const requestBody = z.object({
   country: z.string().min(1),
@@ -272,12 +293,172 @@ export async function authRoutes(app: FastifyInstance) {
     return issueSession(user.id, device);
   });
 
-  /** Thin stubs for APK reset flow — email recovery not shipped; returns 501. */
-  app.post("/api/auth/two-step/reset/request", async (_req, reply) => {
-    return reply.code(501).send({ error: "not_implemented" });
+  /** Wave 30 — reset two-step PIN via verified recovery email. */
+  app.post("/api/auth/two-step/reset/request", async (req, reply) => {
+    const parsed = z
+      .object({ email: z.string().email() })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const email = normalizeEmail(parsed.data.email);
+    const user = await prisma.user.findFirst({
+      where: {
+        twoStepEmail: email,
+        emailVerifiedAt: { not: null },
+        twoStepPinHash: { not: null },
+      },
+    });
+    // Always look successful to avoid email enumeration.
+    if (!user || user.bannedAt) {
+      return {
+        email,
+        expires_in: 300,
+        resend_in: 60,
+        otp_dev_bypass: !canSendEmail() && config.otpDevBypass,
+      };
+    }
+    try {
+      const issued = await issueEmailOtp({
+        email,
+        purpose: "two_step_reset",
+        userId: user.id,
+        log: req.log,
+      });
+      return { email, ...issued };
+    } catch (err) {
+      const e = err as Error & { statusCode?: number; payload?: Record<string, unknown> };
+      if (e.statusCode === 429 && e.payload) {
+        return reply.code(429).send({ email, ...e.payload });
+      }
+      if (e.statusCode === 502) {
+        return reply.code(502).send({ error: "smtp_send_failed" });
+      }
+      throw err;
+    }
   });
-  app.post("/api/auth/two-step/reset/confirm", async (_req, reply) => {
-    return reply.code(501).send({ error: "not_implemented" });
+
+  app.post("/api/auth/two-step/reset/confirm", async (req, reply) => {
+    const parsed = z
+      .object({
+        email: z.string().email(),
+        code: z.string().min(4).max(8),
+        new_pin: z.string().regex(/^\d{6}$/),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const email = normalizeEmail(parsed.data.email);
+    const result = await consumeEmailOtp({
+      email,
+      purpose: "two_step_reset",
+      code: parsed.data.code,
+    });
+    if (!result.ok) {
+      return reply.code(result.status).send({ error: result.error });
+    }
+    const user = await prisma.user.findFirst({
+      where: {
+        twoStepEmail: email,
+        emailVerifiedAt: { not: null },
+        twoStepPinHash: { not: null },
+      },
+    });
+    if (!user || user.bannedAt) {
+      return reply.code(401).send({ error: "invalid_code" });
+    }
+    const pinHash = await hashPassword(parsed.data.new_pin);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        twoStepPinHash: pinHash,
+        twoStepEnabledAt: user.twoStepEnabledAt ?? new Date(),
+      },
+    });
+    return { ok: true };
+  });
+
+  /** Wave 30 — sign in with verified recovery email + OTP (then two-step if enabled). */
+  app.post("/api/auth/email/request", async (req, reply) => {
+    const parsed = z
+      .object({ email: z.string().email() })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const email = normalizeEmail(parsed.data.email);
+    const user = await prisma.user.findFirst({
+      where: { twoStepEmail: email, emailVerifiedAt: { not: null } },
+    });
+    if (!user || user.bannedAt) {
+      return {
+        email,
+        expires_in: 300,
+        resend_in: 60,
+        otp_dev_bypass: !canSendEmail() && config.otpDevBypass,
+      };
+    }
+    try {
+      const issued = await issueEmailOtp({
+        email,
+        purpose: "email_login",
+        userId: user.id,
+        log: req.log,
+      });
+      return { email, ...issued };
+    } catch (err) {
+      const e = err as Error & { statusCode?: number; payload?: Record<string, unknown> };
+      if (e.statusCode === 429 && e.payload) {
+        return reply.code(429).send({ email, ...e.payload });
+      }
+      if (e.statusCode === 502) {
+        return reply.code(502).send({ error: "smtp_send_failed" });
+      }
+      throw err;
+    }
+  });
+
+  app.post("/api/auth/email/verify", async (req, reply) => {
+    const parsed = z
+      .object({
+        email: z.string().email(),
+        code: z.string().min(4).max(8),
+        device: deviceSchema,
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const email = normalizeEmail(parsed.data.email);
+    const result = await consumeEmailOtp({
+      email,
+      purpose: "email_login",
+      code: parsed.data.code,
+    });
+    if (!result.ok) {
+      return reply.code(result.status).send({ error: result.error });
+    }
+    const user = await prisma.user.findFirst({
+      where: { twoStepEmail: email, emailVerifiedAt: { not: null } },
+    });
+    if (!user || user.bannedAt) {
+      return reply.code(401).send({ error: "invalid_code" });
+    }
+    const device = parsed.data.device
+      ? {
+          platform: parsed.data.device.platform,
+          device_name: parsed.data.device.device_name,
+          app_version: parsed.data.device.app_version,
+        }
+      : undefined;
+    if (user.twoStepPinHash && user.twoStepEnabledAt) {
+      return {
+        two_step_required: true,
+        challenge: signTwoStepChallenge(user.id, device),
+      };
+    }
+    return issueSession(user.id, device);
   });
 
   app.post("/api/auth/refresh", async (req, reply) => {
@@ -319,6 +500,164 @@ export async function authRoutes(app: FastifyInstance) {
     return {
       access: signAccessToken(user.id),
       refresh,
+    };
+  });
+
+  /** Wave 31 — companion device link (new device starts; phone approves). */
+  app.post("/api/auth/link/start", async (req, reply) => {
+    const parsed = z
+      .object({
+        device_name: z.string().trim().max(80).optional().nullable(),
+        platform: z.string().trim().max(40).optional().nullable(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    let code = generateLinkCode();
+    for (let i = 0; i < 5; i++) {
+      const clash = await prisma.deviceLinkSession.findUnique({ where: { code } });
+      if (!clash) break;
+      code = generateLinkCode();
+    }
+    const expiresAt = new Date(Date.now() + LINK_TTL_SEC * 1000);
+    const row = await prisma.deviceLinkSession.create({
+      data: {
+        code,
+        status: "pending",
+        deviceName: parsed.data.device_name ?? null,
+        platform: parsed.data.platform ?? null,
+        expiresAt,
+      },
+    });
+    return {
+      code: row.code,
+      expires_in: LINK_TTL_SEC,
+      expires_at: row.expiresAt.toISOString(),
+    };
+  });
+
+  app.post("/api/auth/link/cancel", async (req, reply) => {
+    const parsed = z
+      .object({ code: z.string().trim().min(4).max(16) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const code = parsed.data.code.toUpperCase().replace(/\s+/g, "");
+    await prisma.deviceLinkSession.updateMany({
+      where: { code, status: "pending" },
+      data: { status: "cancelled" },
+    });
+    return { ok: true };
+  });
+
+  app.post("/api/auth/link/approve", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const parsed = z
+      .object({ code: z.string().trim().min(4).max(16) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const code = parsed.data.code.toUpperCase().replace(/\s+/g, "");
+    const row = await prisma.deviceLinkSession.findUnique({ where: { code } });
+    if (!row || row.status !== "pending") {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (row.expiresAt.getTime() < Date.now()) {
+      await prisma.deviceLinkSession.update({
+        where: { id: row.id },
+        data: { status: "cancelled" },
+      });
+      return reply.code(410).send({ error: "expired" });
+    }
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.bannedAt) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    await prisma.deviceLinkSession.update({
+      where: { id: row.id },
+      data: {
+        status: "approved",
+        userId,
+        approvedAt: new Date(),
+      },
+    });
+    return {
+      ok: true,
+      code,
+      device_name: row.deviceName,
+      platform: row.platform,
+    };
+  });
+
+  app.get("/api/auth/link/approved/:code", async (req, reply) => {
+    const raw = (req.params as { code: string }).code ?? "";
+    const code = raw.toUpperCase().replace(/\s+/g, "");
+    const row = await prisma.deviceLinkSession.findUnique({ where: { code } });
+    if (!row) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (row.status === "cancelled" || row.status === "consumed") {
+      return reply.code(410).send({ error: row.status });
+    }
+    if (row.expiresAt.getTime() < Date.now() && row.status === "pending") {
+      await prisma.deviceLinkSession.update({
+        where: { id: row.id },
+        data: { status: "cancelled" },
+      });
+      return reply.code(410).send({ error: "expired" });
+    }
+    if (row.status === "pending") {
+      return {
+        status: "pending",
+        expires_in: Math.max(0, Math.ceil((row.expiresAt.getTime() - Date.now()) / 1000)),
+      };
+    }
+    if (row.status !== "approved" || !row.userId) {
+      return reply.code(409).send({ error: "invalid_state" });
+    }
+    const user = await prisma.user.findUnique({ where: { id: row.userId } });
+    if (!user || user.bannedAt) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    // Issue session once.
+    const session = await issueSession(user.id, {
+      platform: row.platform ?? undefined,
+      device_name: row.deviceName ?? undefined,
+      app_version: undefined,
+    });
+    await prisma.deviceLinkSession.update({
+      where: { id: row.id },
+      data: { status: "consumed", consumedAt: new Date() },
+    });
+    return {
+      status: "approved",
+      access: session.access,
+      refresh: session.refresh,
+      phone: user.phone,
+    };
+  });
+
+  /** Alias: secondary can also “claim” an already-started code (no-op identity check). */
+  app.post("/api/auth/link/claim", async (req, reply) => {
+    const parsed = z
+      .object({ code: z.string().trim().min(4).max(16) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const code = parsed.data.code.toUpperCase().replace(/\s+/g, "");
+    const row = await prisma.deviceLinkSession.findUnique({ where: { code } });
+    if (!row) return reply.code(404).send({ error: "not_found" });
+    if (row.expiresAt.getTime() < Date.now()) {
+      return reply.code(410).send({ error: "expired" });
+    }
+    return {
+      code: row.code,
+      status: row.status,
+      expires_in: Math.max(0, Math.ceil((row.expiresAt.getTime() - Date.now()) / 1000)),
     };
   });
 

@@ -14,6 +14,7 @@ import {
   previewForRichType,
   toMessageDto,
 } from "../messages.js";
+import { allowReadReceipts } from "../privacy.js";
 import { requireUser } from "../plugins/auth.js";
 import { realtimeHub } from "../realtime/hub.js";
 import { notifyNewMessage } from "../push/fcm.js";
@@ -239,6 +240,9 @@ export async function messageRoutes(app: FastifyInstance) {
             lng: z.number().min(-180).max(180),
             address: z.string().trim().max(200).optional().nullable(),
             name: z.string().trim().max(120).optional().nullable(),
+            live: z.boolean().optional(),
+            accuracy: z.number().min(0).max(5000).optional().nullable(),
+            duration_seconds: z.number().int().min(60).max(8 * 3600).optional(),
           })
           .optional(),
         poll: z
@@ -352,10 +356,16 @@ export async function messageRoutes(app: FastifyInstance) {
 
     let preview: Prisma.InputJsonValue | undefined;
     if (msgType === "TEXT" && text) {
-      const url = firstUrlInText(text);
-      if (url) {
-        const card = await unfurlUrl(url);
-        if (card) preview = card;
+      const senderPrefs = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { disableLinkPreviews: true },
+      });
+      if (!senderPrefs?.disableLinkPreviews) {
+        const url = firstUrlInText(text);
+        if (url) {
+          const card = await unfurlUrl(url);
+          if (card) preview = card;
+        }
       }
     }
 
@@ -542,7 +552,8 @@ export async function messageRoutes(app: FastifyInstance) {
       select: { id: true },
     });
     await recordReceipts(userId, toReceipt.map((m) => m.id), "read");
-    if (toRead.length > 0) {
+    const rrOk = await allowReadReceipts(userId, peerId);
+    if (rrOk && toRead.length > 0) {
       await prisma.message.updateMany({
         where: { id: { in: toRead.map((m) => m.id) } },
         data: { status: "READ" },
@@ -555,7 +566,7 @@ export async function messageRoutes(app: FastifyInstance) {
     }
 
     // 200 + JSON so Android Retrofit (ResponseBody) does not fail on empty 204.
-    return { ok: true, updated: toRead.length };
+    return { ok: true, updated: rrOk ? toRead.length : 0 };
   });
 
   app.post("/api/messages/delivered", { preHandler: requireUser }, async (req, reply) => {
@@ -1029,6 +1040,65 @@ export async function messageRoutes(app: FastifyInstance) {
     const updated = await prisma.message.update({
       where: { id },
       data: { payload: { ...payload, rsvps } },
+      include: messageInclude,
+    });
+    broadcastMessage(msg.conversationId, toMessageDto(updated));
+    return toMessageDto(updated, userId);
+  });
+
+  // —— Wave 26: live location ping ——
+  app.put("/api/messages/:id/live-location", { preHandler: requireUser }, async (req, reply) => {
+    const userId = (req as typeof req & { userId: string }).userId;
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        lat: z.number().min(-90).max(90),
+        lng: z.number().min(-180).max(180),
+        accuracy: z.number().min(0).max(5000).optional().nullable(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body" });
+    }
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg || msg.type !== "LOCATION" || msg.deletedForEveryoneAt) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (msg.senderId !== userId) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    if (!(await assertMember(msg.conversationId, userId))) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const payload = (msg.payload ?? {}) as Record<string, unknown>;
+    if (!payload.live || payload.ended) {
+      return reply.code(400).send({ error: "not_live" });
+    }
+    const expiresAt = payload.expires_at ? Date.parse(String(payload.expires_at)) : NaN;
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      const ended = await prisma.message.update({
+        where: { id },
+        data: {
+          payload: { ...payload, ended: true, updated_at: new Date().toISOString() },
+          text: "Live location ended",
+        },
+        include: messageInclude,
+      });
+      broadcastMessage(msg.conversationId, toMessageDto(ended));
+      return reply.code(400).send({ error: "expired" });
+    }
+    const updated = await prisma.message.update({
+      where: { id },
+      data: {
+        payload: {
+          ...payload,
+          lat: parsed.data.lat,
+          lng: parsed.data.lng,
+          accuracy: parsed.data.accuracy ?? payload.accuracy ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        text: "Live location",
+      },
       include: messageInclude,
     });
     broadcastMessage(msg.conversationId, toMessageDto(updated));

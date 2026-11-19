@@ -61,10 +61,11 @@ export function verifyTwoStepChallenge(token: string): TwoStepChallengeClaims {
   return { sub: payload.sub, typ: "two_step", device };
 }
 
-export function signAdminToken(adminId: string, role: string): string {
+export function signAdminToken(adminId: string, role: string, expiresInHours = 8): string {
+  const hours = Math.min(168, Math.max(1, Math.floor(expiresInHours)));
   return jwt.sign({ typ: "admin", role } satisfies Omit<AdminClaims, "sub">, config.adminJwtSecret, {
     subject: adminId,
-    expiresIn: "8h",
+    expiresIn: `${hours}h`,
   });
 }
 
@@ -74,6 +75,32 @@ export function verifyAdminToken(token: string): AdminClaims {
     throw new Error("Invalid admin token");
   }
   return { sub: payload.sub, typ: "admin", role: String(payload.role ?? "MOD") };
+}
+
+/** Short-lived ticket after password, before TOTP (Wave 58). */
+export function signAdminTotpTicket(
+  adminId: string,
+  role: string,
+  purpose: "login" | "enroll",
+): string {
+  return jwt.sign(
+    { typ: "admin_totp", role, purpose },
+    config.adminJwtSecret,
+    { subject: adminId, expiresIn: purpose === "enroll" ? "15m" : "5m" },
+  );
+}
+
+export function verifyAdminTotpTicket(token: string): {
+  sub: string;
+  role: string;
+  purpose: "login" | "enroll";
+} {
+  const payload = jwt.verify(token, config.adminJwtSecret) as jwt.JwtPayload;
+  if (payload.typ !== "admin_totp" || typeof payload.sub !== "string") {
+    throw new Error("Invalid admin TOTP ticket");
+  }
+  const purpose = payload.purpose === "enroll" ? "enroll" : "login";
+  return { sub: payload.sub, role: String(payload.role ?? "MOD"), purpose };
 }
 
 export function bearerFromHeader(header: string | undefined): string | null {

@@ -173,6 +173,26 @@ async function postCallSystemMessage(call: NonNullable<CallRow>) {
   }
 }
 
+/**
+ * Wave 52 — Silence unknown callers.
+ * Skip ring when callee opted in and there is no shared conversation / prior DIRECT chat.
+ */
+async function shouldSilenceCallee(
+  calleeId: string,
+  callerId: string,
+  conversationId: string | null,
+): Promise<boolean> {
+  if (conversationId) return false;
+  const callee = await prisma.user.findUnique({
+    where: { id: calleeId },
+    select: { silenceUnknownCallers: true },
+  });
+  if (!callee?.silenceUnknownCallers) return false;
+  const key = [callerId, calleeId].sort().join(":");
+  const direct = await prisma.conversation.findUnique({ where: { directKey: key } });
+  return !direct;
+}
+
 /** Shared LiveKit ring path used by POST /api/calls and scheduled-call start. */
 export async function createAndRingCall(opts: {
   userId: string;
@@ -235,19 +255,29 @@ export async function createAndRingCall(opts: {
     return { ok: false, code: 500, error: "create_failed" };
   }
 
+  // Wave 52 — ring only callees who have not silenced unknown callers for this initiator.
+  const ringTargets: string[] = [];
   for (const calleeId of calleeIds) {
+    if (await shouldSilenceCallee(calleeId, opts.userId, opts.conversationId)) continue;
+    ringTargets.push(calleeId);
+  }
+
+  for (const calleeId of ringTargets) {
     realtimeHub.toUser(calleeId, {
       type: "call.incoming",
       data: toCallDto(full),
     });
   }
-  void notifyIncomingCall({
-    calleeIds,
-    callId: full.id,
-    media: full.media.toLowerCase(),
-    callerName: full.initiator.displayName || full.initiator.phone || "Aivora",
-    conversationId: full.conversationId,
-  }).catch(() => undefined);
+  if (ringTargets.length > 0) {
+    void notifyIncomingCall({
+      calleeIds: ringTargets,
+      callId: full.id,
+      media: full.media.toLowerCase(),
+      callerName: full.initiator.displayName || full.initiator.phone || "Aivora",
+      conversationId: full.conversationId,
+      initiatorId: full.initiatorId,
+    }).catch(() => undefined);
+  }
 
   setTimeout(() => {
     void (async () => {

@@ -122,10 +122,27 @@ export async function conversationRoutes(app: FastifyInstance) {
       return toConversationDtoAsync(existing, userId);
     }
 
+    // Wave 49 — peer opted out of new chats from accounts they haven’t already messaged.
+    const peerPrefs = await prisma.user.findUnique({
+      where: { id: peerId },
+      select: { blockUnknownMessages: true },
+    });
+    if (peerPrefs?.blockUnknownMessages) {
+      return reply.code(403).send({ error: "unknown_blocked" });
+    }
+
+    const me = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { defaultDisappearingSeconds: true },
+    });
+    const ttl = me?.defaultDisappearingSeconds ?? 0;
     const created = await prisma.conversation.create({
       data: {
         type: "DIRECT",
         directKey: key,
+        disappearingSeconds: ttl > 0 ? ttl : 0,
+        disappearingSetBy: ttl > 0 ? userId : null,
+        disappearingSetAt: ttl > 0 ? new Date() : null,
         members: {
           create: [
             { userId, role: "MEMBER" },
@@ -238,6 +255,7 @@ export async function conversationRoutes(app: FastifyInstance) {
         muted_until: z.string().datetime().nullable().optional(),
         wallpaper: z.string().max(40).nullable().optional(),
         favorite: z.boolean().optional(),
+        locked: z.boolean().optional(),
       })
       .safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -249,7 +267,8 @@ export async function conversationRoutes(app: FastifyInstance) {
       parsed.data.wallpaper === undefined &&
       parsed.data.favorite === undefined &&
       parsed.data.muted === undefined &&
-      parsed.data.muted_until === undefined
+      parsed.data.muted_until === undefined &&
+      parsed.data.locked === undefined
     ) {
       return reply.code(400).send({ error: "empty_settings" });
     }
@@ -261,12 +280,20 @@ export async function conversationRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found" });
     }
 
+    if (parsed.data.locked === true) {
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user?.chatLockPinHash) {
+        return reply.code(400).send({ error: "chat_lock_pin_required" });
+      }
+    }
+
     const data: {
       archived?: boolean;
       pinnedAt?: Date | null;
       mutedUntil?: Date | null;
       favoritedAt?: Date | null;
       wallpaper?: string | null;
+      lockedAt?: Date | null;
     } = {};
 
     if (parsed.data.archived !== undefined) {
@@ -299,6 +326,9 @@ export async function conversationRoutes(app: FastifyInstance) {
     if (parsed.data.wallpaper !== undefined) {
       data.wallpaper = parsed.data.wallpaper;
     }
+    if (parsed.data.locked !== undefined) {
+      data.lockedAt = parsed.data.locked ? new Date() : null;
+    }
 
     const updated = await prisma.conversationMember.update({
       where: { id: member.id },
@@ -311,6 +341,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       archived: updated.archived,
       pinned: Boolean(updated.pinnedAt),
       favorite: Boolean(updated.favoritedAt),
+      locked: Boolean(updated.lockedAt),
       wallpaper: updated.wallpaper,
       muted_until: updated.mutedUntil?.toISOString() ?? null,
     };
@@ -520,18 +551,19 @@ export async function conversationRoutes(app: FastifyInstance) {
     const userId = (req as typeof req & { userId: string }).userId;
     const { id } = req.params as { id: string };
     const conv = await loadConversation(id);
-    if (!conv || conv.type !== "GROUP") {
-      return reply.code(conv ? 400 : 404).send({ error: conv ? "not_a_group" : "not_found" });
+    if (!conv) {
+      return reply.code(404).send({ error: "not_found" });
     }
     const me = conv.members.find((m) => m.userId === userId);
     if (!me) {
       return reply.code(404).send({ error: "not_found" });
     }
     const others = conv.members.filter((m) => m.userId !== userId);
-    if (me.role === "ADMIN") {
+
+    // Direct: delete-for-me (leave membership). Group: leave with admin succession.
+    if (conv.type === "GROUP" && me.role === "ADMIN") {
       const otherAdmins = others.filter((m) => m.role === "ADMIN");
       if (otherAdmins.length === 0 && others.length > 0) {
-        // Promote the earliest-joined remaining member.
         const successor = [...others].sort(
           (a, b) => a.joinedAt.getTime() - b.joinedAt.getTime(),
         )[0];

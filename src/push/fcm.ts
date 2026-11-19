@@ -123,6 +123,7 @@ export async function notifyIncomingCall(opts: {
   media: string;
   callerName: string;
   conversationId: string | null;
+  initiatorId?: string | null;
 }) {
   const offlineIds = opts.calleeIds.filter((id) => !realtimeHub.isOnline(id));
   if (offlineIds.length === 0) return;
@@ -165,6 +166,7 @@ export async function notifyIncomingCall(opts: {
       media,
       caller_name: opts.callerName.slice(0, 80),
       conversation_id: opts.conversationId ?? "",
+      initiator_id: opts.initiatorId ?? "",
       title: "Incoming call",
       preview: body,
     },
