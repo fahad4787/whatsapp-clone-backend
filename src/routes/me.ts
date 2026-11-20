@@ -631,7 +631,7 @@ export async function meRoutes(app: FastifyInstance) {
     };
   });
 
-  app.delete("/api/me/email", { preHandler: requireUser }, async (req, reply) => {
+  app.delete("/api/me/email", { preHandler: requireUser }, async (req) => {
     const userId = (req as typeof req & { userId: string }).userId;
     await prisma.user.update({
       where: { id: userId },

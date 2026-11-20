@@ -856,7 +856,7 @@ export async function messageRoutes(app: FastifyInstance) {
     return dto ?? reply.code(404).send({ error: "not_found" });
   });
 
-  app.delete("/api/messages/:id/star", { preHandler: requireUser }, async (req, reply) => {
+  app.delete("/api/messages/:id/star", { preHandler: requireUser }, async (req) => {
     const userId = (req as typeof req & { userId: string }).userId;
     const { id } = req.params as { id: string };
     await prisma.messageStar.deleteMany({ where: { messageId: id, userId } });

@@ -45,7 +45,6 @@ export function toConversationDto(
   const me = conv.members.find((m) => m.userId === viewerId);
   const peers = conv.members.filter((m) => m.userId !== viewerId);
   const peer = conv.type === "DIRECT" ? peers[0]?.user : undefined;
-  const blocked = blockFlags.blocked_by_me || blockFlags.blocked_me;
 
   const title =
     conv.type === "GROUP"
