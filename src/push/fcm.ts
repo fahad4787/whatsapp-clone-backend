@@ -7,12 +7,26 @@ import { realtimeHub } from "../realtime/hub.js";
 
 let app: App | null = null;
 
+/**
+ * Parse a service-account JSON from an env var. Hosting dashboards often turn the
+ * private_key's "\\n" escapes into real newlines, which makes strict JSON.parse fail.
+ */
+export function parseServiceAccount(raw: string): Record<string, unknown> {
+  const text = raw.trim();
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    const repaired = text.replace(/\r?\n/g, "\\n").replace(/\t/g, "\\t");
+    return JSON.parse(repaired) as Record<string, unknown>;
+  }
+}
+
 export function initFcm(): boolean {
   if (app) return true;
   try {
     let serviceAccount: Record<string, unknown> | undefined;
     if (config.fcmServiceAccountJson) {
-      serviceAccount = JSON.parse(config.fcmServiceAccountJson) as Record<string, unknown>;
+      serviceAccount = parseServiceAccount(config.fcmServiceAccountJson);
     } else if (config.fcmServiceAccountPath) {
       serviceAccount = JSON.parse(
         readFileSync(config.fcmServiceAccountPath, "utf8"),
