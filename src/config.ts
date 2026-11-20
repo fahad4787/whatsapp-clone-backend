@@ -48,3 +48,18 @@ export const config = {
   livekitApiKey: process.env.LIVEKIT_API_KEY ?? "",
   livekitApiSecret: process.env.LIVEKIT_API_SECRET ?? "",
 };
+
+if (config.nodeEnv === "production") {
+  const insecure: string[] = [];
+  if (config.jwtAccessSecret.startsWith("dev-")) insecure.push("JWT_ACCESS_SECRET");
+  if (config.jwtRefreshSecret.startsWith("dev-")) insecure.push("JWT_REFRESH_SECRET");
+  if (config.adminJwtSecret.startsWith("dev-")) insecure.push("ADMIN_JWT_SECRET");
+  if (insecure.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(`[config] WARNING: default dev secrets in production: ${insecure.join(", ")}`);
+  }
+  if (config.otpDevBypass) {
+    // eslint-disable-next-line no-console
+    console.warn("[config] WARNING: OTP_DEV_BYPASS is on in production (code 000000 accepted)");
+  }
+}
