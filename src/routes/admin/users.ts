@@ -77,6 +77,28 @@ export async function adminUserRoutes(app: FastifyInstance) {
     return toAdminUserDto(user);
   });
 
+  app.post("/api/admin/users", { preHandler: requireAdmin }, async (req, reply) => {
+    const adminId = (req as typeof req & { adminId: string }).adminId;
+    const parsed = z
+      .object({
+        phone: z.string().trim().regex(/^\+\d{7,15}$/),
+        display_name: z.string().trim().max(80).optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+    if (await prisma.user.findUnique({ where: { phone: parsed.data.phone } })) {
+      return reply.code(409).send({ error: "phone_taken" });
+    }
+    const user = await prisma.user.create({
+      data: { phone: parsed.data.phone, displayName: parsed.data.display_name || null },
+      include: { _count: { select: { devices: true, memberships: true } } },
+    });
+    await prisma.adminAuditLog.create({
+      data: { actorId: adminId, action: "user.create", meta: { user_id: user.id, phone: user.phone } },
+    });
+    return reply.code(201).send(toAdminUserDto(user));
+  });
+
   app.post("/api/admin/users/:id/ban", { preHandler: requireAdmin }, async (req, reply) => {
     const adminId = (req as typeof req & { adminId: string }).adminId;
     const { id } = req.params as { id: string };
