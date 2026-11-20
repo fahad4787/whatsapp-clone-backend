@@ -3,9 +3,20 @@ import { realtimeHub } from "./realtime/hub.js";
 
 /** Tell every peer in shared chats that this user went online/offline (app-level). */
 export async function broadcastUserPresence(userId: string, online: boolean) {
+  try {
+    await broadcastUserPresenceUnsafe(userId, online);
+  } catch {
+    // Best-effort and always called fire-and-forget: a DB hiccup (or shutdown)
+    // must never surface as an unhandled rejection.
+  }
+}
+
+async function broadcastUserPresenceUnsafe(userId: string, online: boolean) {
   const seenAt = online ? null : new Date().toISOString();
   if (!online) {
-    void import("./privacy.js").then(({ touchLastSeen }) => touchLastSeen(userId));
+    void import("./privacy.js")
+      .then(({ touchLastSeen }) => touchLastSeen(userId))
+      .catch(() => undefined);
   }
 
   const memberships = await prisma.conversationMember.findMany({
