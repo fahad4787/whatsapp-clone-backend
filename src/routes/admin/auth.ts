@@ -9,6 +9,7 @@ import {
   verifyAdminTotpTicket,
 } from "../../auth/jwt.js";
 import { prisma } from "../../db.js";
+import { requireAdmin } from "../../plugins/auth.js";
 import {
   clearAdminLoginFailures,
   getAdminSecurity,
@@ -106,6 +107,15 @@ export async function adminAuthRoutes(app: FastifyInstance) {
       },
     });
 
+    return adminPayload(admin, security.session_hours);
+  });
+
+  // Sliding session: swap a still-valid token for a fresh one so active admins stay signed in.
+  app.post("/api/admin/auth/refresh", { preHandler: requireAdmin }, async (req, reply) => {
+    const adminId = (req as typeof req & { adminId: string }).adminId;
+    const admin = await prisma.adminUser.findUnique({ where: { id: adminId } });
+    if (!admin) return reply.code(401).send({ error: "unauthorized" });
+    const security = await getAdminSecurity();
     return adminPayload(admin, security.session_hours);
   });
 
