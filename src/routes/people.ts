@@ -33,44 +33,54 @@ export async function peopleRoutes(app: FastifyInstance) {
     return toUserDto(user);
   });
 
+  /**
+   * New chat / group / call pickers.
+   * - No query: only people you already share a conversation with (never the whole user base).
+   * - Query: find anyone by phone number (>= 7 digits, so the directory cannot be enumerated),
+   *   or search your existing contacts by name / number fragment.
+   */
   app.get("/api/people/search", { preHandler: requireUser }, async (req) => {
     const userId = (req as typeof req & { userId: string }).userId;
     const raw = String((req.query as { q?: string }).q ?? "").trim();
-    const digits = raw.replace(/\D/g, "");
+    // Local numbers are often typed with a leading 0 (0300…); stored numbers are international.
+    const digits = raw.replace(/\D/g, "").replace(/^0+/, "");
     const limit = Math.min(
       100,
       Math.max(1, Number((req.query as { limit?: string }).limit ?? (raw ? 30 : 100)) || 30),
     );
+    const orderBy = [{ displayName: "asc" as const }, { createdAt: "desc" as const }];
+    const contactOf = {
+      memberships: { some: { conversation: { members: { some: { userId } } } } },
+    };
+    const base = { id: { not: userId }, bannedAt: null };
 
-    // Empty query → list all other users (New chat / New group default).
     if (!raw) {
       const users = await prisma.user.findMany({
-        where: { id: { not: userId }, bannedAt: null },
-        orderBy: [{ displayName: "asc" }, { createdAt: "desc" }],
+        where: { ...base, ...contactOf },
+        orderBy,
         take: limit,
       });
       return { items: users.map(toUserDto) };
     }
 
-    if (raw.length < 2 && digits.length < 2) {
-      return { items: [] };
-    }
+    const byNumber = digits.length >= 7 ? [{ phone: { contains: digits } }] : [];
+    const inContacts = [
+      ...(raw.length >= 2
+        ? [{ displayName: { contains: raw, mode: "insensitive" as const } }]
+        : []),
+      ...(digits.length >= 2 ? [{ phone: { contains: digits } }] : []),
+    ];
+    const or = [
+      ...byNumber,
+      ...(inContacts.length ? [{ AND: [contactOf, { OR: inContacts }] }] : []),
+    ];
+    if (!or.length) return { items: [] };
 
     const users = await prisma.user.findMany({
-      where: {
-        id: { not: userId },
-        bannedAt: null,
-        OR: [
-          ...(digits.length >= 2 ? [{ phone: { contains: digits } }] : []),
-          ...(raw.length >= 2
-            ? [{ displayName: { contains: raw, mode: "insensitive" as const } }]
-            : []),
-        ],
-      },
-      orderBy: [{ displayName: "asc" }, { createdAt: "desc" }],
+      where: { ...base, OR: or },
+      orderBy,
       take: limit,
     });
-
     return { items: users.map(toUserDto) };
   });
 }

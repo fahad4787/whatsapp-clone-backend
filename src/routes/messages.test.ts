@@ -106,5 +106,24 @@ describe("messages", () => {
     });
     expect(hit.statusCode).toBe(200);
   });
+
+  it("people search never exposes strangers except by full number", async () => {
+    const stamp = String(Date.now()).slice(-7);
+    const national = `533${stamp}`;
+    const stranger = await loginAs(national);
+    const ids = async (q: string) => {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/people/search${q ? `?q=${encodeURIComponent(q)}` : ""}`,
+        headers: { authorization: `Bearer ${userA.access}` },
+      });
+      return (res.json().items as { id: string }[]).map((u) => u.id);
+    };
+    expect(await ids("")).not.toContain(stranger.userId);
+    expect(await ids(national.slice(-4))).not.toContain(stranger.userId);
+    expect(await ids(national)).toContain(stranger.userId);
+    expect(await ids(`0${national}`)).toContain(stranger.userId);
+    expect(await ids("")).toContain(userB.userId);
+  });
 });
 
