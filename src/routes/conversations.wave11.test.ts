@@ -44,6 +44,13 @@ beforeAll(async () => {
     payload: { user_id: userB.userId },
   });
   conversationId = create.json().id;
+  // Empty 1:1 chats are hidden from the list until the first message.
+  await app.inject({
+    method: "POST",
+    url: `/api/conversations/${conversationId}/messages`,
+    headers: { authorization: `Bearer ${userA.access}` },
+    payload: { text: "wave11 hello", client_id: `w11-init-${Date.now()}` },
+  });
 });
 
 afterAll(async () => {

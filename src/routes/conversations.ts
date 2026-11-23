@@ -49,8 +49,14 @@ export async function conversationRoutes(app: FastifyInstance) {
       ],
     });
 
+    // Like WhatsApp: a 1:1 chat nobody has written in yet stays out of the list
+    // (the other person must not see an empty chat appear). It shows up for both
+    // sides as soon as the first message is sent; the opener still loads it by id.
+    const visible = memberships.filter(
+      (m) => m.conversation.type !== "DIRECT" || m.conversation.messages.length > 0,
+    );
     const items = await Promise.all(
-      memberships.map(async (m) => {
+      visible.map(async (m) => {
         const unread = await prisma.message.count({
           where: {
             conversationId: m.conversationId,

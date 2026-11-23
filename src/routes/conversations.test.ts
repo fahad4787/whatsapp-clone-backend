@@ -66,6 +66,22 @@ describe("conversations", () => {
     expect(again.statusCode).toBe(200);
     expect(again.json().id).toBe(create.json().id);
 
+    // Nobody has written yet: the chat must not appear for the other person.
+    const emptyList = await app.inject({
+      method: "GET",
+      url: "/api/conversations",
+      headers: { authorization: `Bearer ${userB.access}` },
+    });
+    expect(emptyList.json().items.some((c: { id: string }) => c.id === create.json().id)).toBe(false);
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${create.json().id}/messages`,
+      headers: { authorization: `Bearer ${userA.access}` },
+      payload: { text: "first hello", client_id: `c-${Date.now()}` },
+    });
+    expect(sent.statusCode).toBe(201);
+
     const listB = await app.inject({
       method: "GET",
       url: "/api/conversations",

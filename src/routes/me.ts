@@ -21,6 +21,7 @@ import {
 } from "../exportChat.js";
 import { requireUser } from "../plugins/auth.js";
 import { toUserDto } from "../profile.js";
+import { broadcastProfileUpdate } from "../presenceBroadcast.js";
 import { getAppSettings, isCountryAllowed } from "../services/appConfig.js";
 import {
   consumeEmailOtp,
@@ -182,6 +183,7 @@ export async function meRoutes(app: FastifyInstance) {
     if (parsed.data.about !== undefined) data.about = parsed.data.about;
 
     const user = await prisma.user.update({ where: { id: userId }, data });
+    void broadcastProfileUpdate(userId);
     return toUserDto(user);
   });
 
@@ -514,6 +516,7 @@ export async function meRoutes(app: FastifyInstance) {
       where: { id: userId },
       data: { avatarUrl },
     });
+    void broadcastProfileUpdate(userId);
     return toUserDto(user);
   });
 
@@ -533,6 +536,7 @@ export async function meRoutes(app: FastifyInstance) {
       where: { id: userId },
       data: { avatarUrl: null },
     });
+    void broadcastProfileUpdate(userId);
     return toUserDto(user);
   });
 

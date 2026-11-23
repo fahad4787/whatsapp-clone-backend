@@ -56,6 +56,37 @@ async function broadcastUserPresenceUnsafe(userId: string, online: boolean) {
   }
 }
 
+/** Push a changed name / about / photo to everyone who shares a chat with this user. */
+export async function broadcastProfileUpdate(userId: string) {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return;
+    const rows = await prisma.conversationMember.findMany({
+      where: { userId },
+      select: { conversationId: true },
+    });
+    if (rows.length === 0) return;
+    const peers = await prisma.conversationMember.findMany({
+      where: { conversationId: { in: rows.map((r) => r.conversationId) }, userId: { not: userId } },
+      select: { userId: true },
+      distinct: ["userId"],
+    });
+    for (const p of peers) {
+      realtimeHub.toUser(p.userId, {
+        type: "profile",
+        data: {
+          user_id: userId,
+          display_name: user.displayName,
+          about: user.about,
+          avatar_url: user.avatarUrl,
+        },
+      });
+    }
+  } catch {
+    // Best-effort, fire-and-forget.
+  }
+}
+
 /** Members of a conversation who currently have the app open (WS attached). */
 export async function onlineMemberIds(conversationId: string): Promise<string[]> {
   const members = await prisma.conversationMember.findMany({
