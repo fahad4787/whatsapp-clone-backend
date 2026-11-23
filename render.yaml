@@ -28,6 +28,8 @@ services:
       - key: ADMIN_JWT_SECRET
         generateValue: true
       - key: OTP_DEV_BYPASS
+        value: "0"
+      - key: OTP_ADMIN_DELIVERY
         value: "1"
       - key: CORS_ORIGIN
         sync: false

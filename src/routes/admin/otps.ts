@@ -5,6 +5,8 @@ import { generateOtpCode, hashSha256 } from "../../auth/crypto.js";
 import { prisma } from "../../db.js";
 import { requireAdmin } from "../../plugins/auth.js";
 
+const MAX_ATTEMPTS = 5;
+
 export async function adminOtpRoutes(app: FastifyInstance) {
   app.get("/api/admin/otps", { preHandler: requireAdmin }, async (req) => {
     const q = req.query as { limit?: string };
@@ -16,17 +18,27 @@ export async function adminOtpRoutes(app: FastifyInstance) {
     });
 
     const now = Date.now();
+    // Rows are newest-first, so any newer code for the same identifier + purpose appears earlier in the list.
+    const seen = new Set<string>();
     return {
       items: rows.map((r) => {
-        let status = "Pending";
+        const key = `${r.phone}|${r.purpose}`;
+        const hasNewer = seen.has(key);
+        seen.add(key);
+
+        let status: "Pending" | "Used" | "Expired" | "Failed" | "Superseded" = "Pending";
         if (r.consumedAt) status = "Used";
+        else if (r.attempts >= MAX_ATTEMPTS) status = "Failed";
         else if (r.expiresAt.getTime() < now) status = "Expired";
-        else if (r.attempts >= 5) status = "Failed";
+        else if (hasNewer) status = "Superseded";
 
         return {
           id: r.id,
           phone: r.phone,
-          code: r.devCode,
+          channel: r.phone.includes("@") ? "email" : "phone",
+          purpose: r.purpose,
+          // Only a still-usable code is shown to operators; spent codes are never exposed again.
+          code: status === "Pending" ? r.devCode : null,
           status,
           attempts: r.attempts,
           expires_at: r.expiresAt.toISOString(),
@@ -49,7 +61,7 @@ export async function adminOtpRoutes(app: FastifyInstance) {
       data: {
         phone: parsed.data.phone,
         codeHash: hashSha256(code),
-        devCode: config.otpDevBypass ? code : null,
+        devCode: config.otpAdminDelivery ? code : null,
         purpose: "login",
         expiresAt: new Date(Date.now() + config.otpTtlSec * 1000),
         userId: user?.id ?? null,

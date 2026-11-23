@@ -140,6 +140,7 @@ export function toPublicConfig(settings: AppSettings, countries: Awaited<ReturnT
     upload_limit_mb: Number(settings.upload_limit_mb),
     sms_enabled: smsLive,
     otp_dev_bypass: !smsLive && config.otpDevBypass,
+    otp_via_admin: !smsLive && config.otpAdminDelivery,
     countries: countries.map((c) => ({
       iso: c.iso,
       name: c.name,

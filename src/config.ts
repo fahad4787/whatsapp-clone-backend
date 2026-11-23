@@ -21,7 +21,13 @@ export const config = {
   jwtRefreshTtlSec: Number(process.env.JWT_REFRESH_TTL_SEC ?? 2_592_000),
   otpTtlSec: Number(process.env.OTP_TTL_SEC ?? 300),
   otpResendSec: Number(process.env.OTP_RESEND_SEC ?? 60),
-  otpDevBypass: (process.env.OTP_DEV_BYPASS ?? "1") === "1",
+  /** Test-only: accept 000000 as a code. Off by default; never enable in production. */
+  otpDevBypass: (process.env.OTP_DEV_BYPASS ?? "0") === "1",
+  /**
+   * Manual delivery: while no SMS/email provider is live, the code is stored so an admin can read it in
+   * the OTP log and pass it on. Turn off (OTP_ADMIN_DELIVERY=0) once real SMS/SMTP is configured.
+   */
+  otpAdminDelivery: (process.env.OTP_ADMIN_DELIVERY ?? "1") === "1",
   /** twilio | none — real SMS only when sms_enabled admin setting is also on. */
   smsProvider: (process.env.SMS_PROVIDER ?? "none").toLowerCase(),
   twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
@@ -59,5 +65,8 @@ if (config.nodeEnv === "production") {
   }
   if (config.otpDevBypass) {
     console.warn("[config] WARNING: OTP_DEV_BYPASS is on in production (code 000000 accepted)");
+  }
+  if (config.otpAdminDelivery) {
+    console.warn("[config] OTP_ADMIN_DELIVERY is on: codes are readable in the admin OTP log until real SMS/email is configured");
   }
 }

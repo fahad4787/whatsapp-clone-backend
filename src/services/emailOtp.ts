@@ -15,7 +15,7 @@ export async function issueEmailOtp(opts: {
   purpose: string;
   userId?: string | null;
   log: { info: (obj: object, msg: string) => void; error?: (obj: object, msg: string) => void };
-}): Promise<{ expires_in: number; resend_in: number; otp_dev_bypass: boolean }> {
+}): Promise<{ expires_in: number; resend_in: number; otp_dev_bypass: boolean; otp_via_admin: boolean }> {
   const email = normalizeEmail(opts.email);
   const settings = await getAppSettings();
   const otpGap = Number(settings.otp_gap) || config.otpResendSec;
@@ -50,7 +50,7 @@ export async function issueEmailOtp(opts: {
       phone: email,
       codeHash: hashSha256(code),
       // Never persist plaintext when SMTP will deliver the code.
-      devCode: emailLive || !config.otpDevBypass ? null : code,
+      devCode: emailLive || !config.otpAdminDelivery ? null : code,
       purpose: opts.purpose,
       expiresAt,
       userId: opts.userId ?? null,
@@ -73,7 +73,7 @@ export async function issueEmailOtp(opts: {
   } else {
     opts.log.info(
       { email, code, purpose: opts.purpose },
-      "email OTP issued (no SMTP — check logs / use 000000 when OTP_DEV_BYPASS=1)",
+      "email OTP issued (no SMTP — code is visible to admins in the OTP log)",
     );
   }
 
@@ -81,6 +81,7 @@ export async function issueEmailOtp(opts: {
     expires_in: otpTtl,
     resend_in: otpGap,
     otp_dev_bypass: !emailLive && config.otpDevBypass,
+    otp_via_admin: !emailLive && config.otpAdminDelivery,
   };
 }
 

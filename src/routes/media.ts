@@ -47,6 +47,18 @@ export async function mediaRoutes(app: FastifyInstance) {
       done(null, body);
     });
   }
+  // Documents (docx/xlsx/pptx/zip/txt/…): without these Fastify answers 415 and the file
+  // message never leaves the sender. text/plain has a built-in string parser — replace it
+  // with a raw-buffer one inside this plugin scope only.
+  app.removeContentTypeParser("text/plain");
+  app.addContentTypeParser("text/plain", { parseAs: "buffer" }, (_req, body, done) => {
+    done(null, body);
+  });
+  // Anything else (office docs, zip, unknown) is read as raw bytes; the PUT handler
+  // validates the MIME against the allow-list before writing.
+  app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => {
+    done(null, body);
+  });
 
   /** S3-style contract: client PUTs bytes to upload_url, then uses public_url in a message. */
   app.post("/api/media/presign", { preHandler: requireUser }, async (req, reply) => {

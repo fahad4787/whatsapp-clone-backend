@@ -170,7 +170,7 @@ export async function authRoutes(app: FastifyInstance) {
         phone,
         codeHash: hashSha256(code),
         // Never store plaintext when SMS is live.
-        devCode: smsLive || !config.otpDevBypass ? null : code,
+        devCode: smsLive || !config.otpAdminDelivery ? null : code,
         purpose: "login",
         expiresAt,
         userId: user.id,
@@ -193,6 +193,7 @@ export async function authRoutes(app: FastifyInstance) {
       expires_in: otpTtl,
       resend_in: otpGap,
       otp_dev_bypass: !smsLive && config.otpDevBypass,
+      otp_via_admin: !smsLive && config.otpAdminDelivery,
     };
   });
 
@@ -316,6 +317,7 @@ export async function authRoutes(app: FastifyInstance) {
         expires_in: 300,
         resend_in: 60,
         otp_dev_bypass: !canSendEmail() && config.otpDevBypass,
+        otp_via_admin: !canSendEmail() && config.otpAdminDelivery,
       };
     }
     try {
@@ -397,6 +399,7 @@ export async function authRoutes(app: FastifyInstance) {
         expires_in: 300,
         resend_in: 60,
         otp_dev_bypass: !canSendEmail() && config.otpDevBypass,
+        otp_via_admin: !canSendEmail() && config.otpAdminDelivery,
       };
     }
     try {

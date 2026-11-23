@@ -40,6 +40,18 @@ const FILE = new Set([
   "text/plain",
   "application/zip",
   "application/x-zip-compressed",
+  "application/octet-stream",
+  "application/rtf",
+  "application/json",
+  "application/x-7z-compressed",
+  "application/vnd.rar",
+  "application/x-rar-compressed",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation",
+  "text/csv",
+  "text/markdown",
+  "text/rtf",
 ]);
 
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;

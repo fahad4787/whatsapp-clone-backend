@@ -916,7 +916,7 @@ export async function meRoutes(app: FastifyInstance) {
       data: {
         phone,
         codeHash: hashSha256(code),
-        devCode: smsLive || !config.otpDevBypass ? null : code,
+        devCode: smsLive || !config.otpAdminDelivery ? null : code,
         purpose: "change_number",
         expiresAt: new Date(Date.now() + otpTtl * 1000),
         userId,
@@ -939,6 +939,7 @@ export async function meRoutes(app: FastifyInstance) {
       expires_in: otpTtl,
       resend_in: otpGap,
       otp_dev_bypass: !smsLive && config.otpDevBypass,
+      otp_via_admin: !smsLive && config.otpAdminDelivery,
     };
   });
 
