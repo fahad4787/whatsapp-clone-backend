@@ -132,6 +132,16 @@ function callNoticeText(call: NonNullable<CallRow>): string {
 async function postCallSystemMessage(call: NonNullable<CallRow>) {
   const conversationId = call.conversationId;
   if (!conversationId) return;
+  // Whoever answered or declined already knows about this call, so it isn't unread for them.
+  const handledBy = call.participants
+    .filter(
+      (m) =>
+        m.joinedAt ||
+        m.status === "REJECTED" ||
+        (call.endReason === "callee_hangup" && m.status === "LEFT"),
+    )
+    .map((m) => m.userId);
+  const now = new Date();
   try {
     const notice = await prisma.message.create({
       data: {
@@ -148,8 +158,14 @@ async function postCallSystemMessage(call: NonNullable<CallRow>) {
           end_reason: call.endReason,
           status: call.status.toLowerCase(),
           duration_seconds: durationSeconds(call),
+          handled_by: handledBy,
         },
         status: "SENT",
+        receipts: {
+          create: handledBy
+            .filter((userId) => userId !== call.initiatorId)
+            .map((userId) => ({ userId, deliveredAt: now, readAt: now })),
+        },
       },
       include: messageInclude,
     });

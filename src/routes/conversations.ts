@@ -35,6 +35,31 @@ async function loadConversation(id: string) {
 
 const PIN_MAX = 3;
 
+/**
+ * Messages this member has not opened yet. A message's own status is shared by
+ * everyone in the chat (and stays unread when read receipts are off), so the
+ * per-member read receipt is what counts.
+ */
+function countUnread(
+  userId: string,
+  type: string,
+  member: { conversationId: string; joinedAt: Date; clearedAt: Date | null },
+) {
+  const clearedLater = member.clearedAt && member.clearedAt > member.joinedAt;
+  return prisma.message.count({
+    where: {
+      conversationId: member.conversationId,
+      senderId: { not: userId },
+      deletedForEveryoneAt: null,
+      hides: { none: { userId } },
+      receipts: { none: { userId, readAt: { not: null } } },
+      // 1:1 only: also trust the status, for messages read before receipts existed.
+      ...(type === "DIRECT" ? { status: { not: "READ" as const } } : {}),
+      createdAt: clearedLater ? { gt: member.clearedAt! } : { gte: member.joinedAt },
+    },
+  });
+}
+
 export async function conversationRoutes(app: FastifyInstance) {
   app.get("/api/conversations", { preHandler: requireUser }, async (req) => {
     const userId = (req as typeof req & { userId: string }).userId;
@@ -57,16 +82,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     );
     const items = await Promise.all(
       visible.map(async (m) => {
-        const unread = await prisma.message.count({
-          where: {
-            conversationId: m.conversationId,
-            senderId: { not: userId },
-            status: { not: "READ" },
-            deletedForEveryoneAt: null,
-            hides: { none: { userId } },
-            ...(m.clearedAt ? { createdAt: { gt: m.clearedAt } } : {}),
-          },
-        });
+        const unread = await countUnread(userId, m.conversation.type, m);
         return toConversationDtoAsync(m.conversation, userId, unread);
       }),
     );
@@ -88,16 +104,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "not_found" });
     }
     const membership = conv.members.find((m) => m.userId === userId);
-    const unread = await prisma.message.count({
-      where: {
-        conversationId: id,
-        senderId: { not: userId },
-        status: { not: "READ" },
-        deletedForEveryoneAt: null,
-        hides: { none: { userId } },
-        ...(membership?.clearedAt ? { createdAt: { gt: membership.clearedAt } } : {}),
-      },
-    });
+    const unread = membership ? await countUnread(userId, conv.type, membership) : 0;
     return toConversationDtoAsync(conv, userId, unread);
   });
 

@@ -88,6 +88,68 @@ describe("Wave 16 calls", () => {
     expect(end.json().call.status).toBe("ended");
   });
 
+  it("counts a call notice as unread only for someone who never handled the call", async () => {
+    process.env.LIVEKIT_URL = "wss://test.livekit.cloud";
+    process.env.LIVEKIT_API_KEY = "APItestkey";
+    process.env.LIVEKIT_API_SECRET = "testsecretvaluefortoken";
+
+    const suffix = String(Date.now()).slice(-8);
+    const a = await userAccess(`913${suffix}`.slice(0, 10));
+    const b = await userAccess(`914${suffix}`.slice(0, 10));
+    const auth = (access: string) => ({ authorization: `Bearer ${access}` });
+
+    const dm = await app.inject({
+      method: "POST",
+      url: "/api/conversations/direct",
+      headers: auth(a.access),
+      payload: { user_id: b.userId },
+    });
+    const conversationId = dm.json().id as string;
+
+    const call = async () => {
+      const start = await app.inject({
+        method: "POST",
+        url: "/api/calls",
+        headers: auth(a.access),
+        payload: { conversation_id: conversationId, media: "audio" },
+      });
+      expect(start.statusCode).toBe(201);
+      return start.json().call.id as string;
+    };
+    const act = async (id: string, action: string, access: string) => {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/calls/${id}/${action}`,
+        headers: auth(access),
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+    };
+    const unreadFor = async (access: string) => {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/conversations/${conversationId}`,
+        headers: auth(access),
+      });
+      return res.json().unread_count as number;
+    };
+
+    const answered = await call();
+    await act(answered, "answer", b.access);
+    await act(answered, "end", a.access);
+    expect(await unreadFor(b.access)).toBe(0);
+
+    await act(await call(), "reject", b.access);
+    expect(await unreadFor(b.access)).toBe(0);
+
+    await act(await call(), "end", b.access); // callee hangs up while it rings
+    expect(await unreadFor(b.access)).toBe(0);
+
+    await act(await call(), "end", a.access); // caller gives up: a missed call
+    expect(await unreadFor(b.access)).toBe(1);
+    expect(await unreadFor(a.access)).toBe(0);
+  });
+
   it("rejects start when LiveKit env is missing", async () => {
     const prev = {
       url: process.env.LIVEKIT_URL,

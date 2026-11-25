@@ -284,6 +284,11 @@ export function toMessageDto(msg: MessageWithExtras, viewerId?: string) {
     attachment: hideBody || viewOnceOpened ? null : (msg.attachment ?? null),
     preview: hideBody ? null : (msg.preview ?? null),
     system: isSystem,
+    /** Call notices: members who answered or declined, so it isn't new to them. */
+    handled_by:
+      isSystem && Array.isArray(payloadRec?.handled_by)
+        ? (payloadRec.handled_by as string[])
+        : [],
     poll: type === "POLL" && payload ? pollToDto(payload, viewerId) : null,
     event: type === "EVENT" && payload ? eventToDto(payload, viewerId) : null,
     contact:
