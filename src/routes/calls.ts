@@ -66,6 +66,7 @@ function toCallDto(call: NonNullable<CallRow>) {
       joined_at: p.joinedAt?.toISOString() ?? null,
       left_at: p.leftAt?.toISOString() ?? null,
       ringing: p.status === "RINGING",
+      delivered: p.ringingAt != null,
       silenced: false,
       user: {
         id: p.user.id,
@@ -491,7 +492,7 @@ export async function callRoutes(app: FastifyInstance) {
     const userId = (req as typeof req & { userId: string }).userId;
     const { id, action } = req.params as { id: string; action: string };
     const act = action.trim().toLowerCase();
-    if (!["answer", "reject", "end", "leave"].includes(act)) {
+    if (!["answer", "reject", "end", "leave", "ringing"].includes(act)) {
       return reply.code(400).send({ error: "invalid_action" });
     }
 
@@ -499,6 +500,23 @@ export async function callRoutes(app: FastifyInstance) {
     if (!call) return reply.code(404).send({ error: "not_found" });
     const mine = call.participants.find((p) => p.userId === userId);
     if (!mine) return reply.code(403).send({ error: "forbidden" });
+
+    if (act === "ringing") {
+      // The callee's phone got the call: the caller's screen moves from "Calling" to "Ringing".
+      if (mine.status !== "RINGING" || !["RINGING", "ACTIVE"].includes(call.status)) {
+        return { call: toCallDto(call), token: null, livekit_url: null, invited: false };
+      }
+      if (!mine.ringingAt) {
+        await prisma.callParticipant.update({
+          where: { callId_userId: { callId: id, userId } },
+          data: { ringingAt: new Date() },
+        });
+      }
+      const after = (await loadCall(id)) ?? call;
+      const others = after.participants.filter((p) => p.userId !== userId).map((p) => p.userId);
+      notifyUsers(after, others, "call.ringing", { ringing_user_id: userId });
+      return { call: toCallDto(after), token: null, livekit_url: null, invited: false };
+    }
 
     if (act === "answer") {
       // A group call that is already running can still be joined by a member who is not in it.

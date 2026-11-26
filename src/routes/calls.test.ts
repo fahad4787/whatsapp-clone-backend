@@ -67,6 +67,19 @@ describe("Wave 16 calls", () => {
     expect(started.call.status).toBe("ringing");
     expect(started.call.media).toBe("audio");
 
+    // Before the callee's phone reports in, the caller sees "Calling"; after, "Ringing".
+    type Dto = { participants: { user_id: string; delivered: boolean }[] };
+    const delivered = (c: Dto) => c.participants.find((p) => p.user_id === b.userId)?.delivered;
+    expect(delivered(started.call as unknown as Dto)).toBe(false);
+    const ring = await app.inject({
+      method: "POST",
+      url: `/api/calls/${started.call.id}/ringing`,
+      headers: { authorization: `Bearer ${b.access}` },
+      payload: {},
+    });
+    expect(ring.statusCode).toBe(200);
+    expect(delivered(ring.json().call as Dto)).toBe(true);
+
     const answer = await app.inject({
       method: "POST",
       url: `/api/calls/${started.call.id}/answer`,

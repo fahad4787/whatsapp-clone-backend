@@ -456,6 +456,8 @@ model CallParticipant {
   status    CallParticipantStatus @default(RINGING)
   joinedAt  DateTime?
   leftAt    DateTime?
+  /// Set when the callee's phone reports the call reached it (caller sees "Ringing").
+  ringingAt DateTime?
   createdAt DateTime              @default(now())
 
   @@unique([callId, userId])
