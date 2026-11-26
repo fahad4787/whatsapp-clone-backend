@@ -168,12 +168,11 @@ export async function notifyIncomingCall(opts: {
       ? `${opts.callerName} is video calling…`
       : `${opts.callerName} is calling…`;
 
+  // Data-only on purpose: with a `notification` block, Android shows a plain notification
+  // itself when the app is closed and never calls onMessageReceived, so the phone would
+  // not ring, show the call screen, or report "Ringing" back to the caller.
   const res: BatchResponse = await getMessaging(app).sendEachForMulticast({
     tokens,
-    notification: {
-      title: "Incoming call",
-      body,
-    },
     data: {
       type: "call",
       call_id: opts.callId,
@@ -186,12 +185,8 @@ export async function notifyIncomingCall(opts: {
     },
     android: {
       priority: "high",
-      notification: {
-        channelId: "calls",
-        priority: "max",
-        defaultSound: true,
-        defaultVibrateTimings: true,
-      },
+      // A call stops ringing after 60s server-side; don't deliver it to a phone that comes online later.
+      ttl: 60_000,
     },
   });
 
