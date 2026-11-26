@@ -190,7 +190,17 @@ export async function adminConversationRoutes(app: FastifyInstance) {
       })),
       messages: messages.map((m) => {
         const sender = senderMap.get(m.senderId);
-        const att = m.attachment as { url?: string; mime?: string; name?: string } | null;
+        const att = m.attachment as {
+          url?: string;
+          mime?: string;
+          name?: string;
+          size?: number;
+          width?: number;
+          height?: number;
+          thumbnail_url?: string;
+        } | null;
+        // A message deleted for everyone keeps no visible media in the admin either.
+        const media = m.deletedForEveryoneAt ? null : att;
         return {
           id: m.id,
           sender_id: m.senderId,
@@ -209,6 +219,11 @@ export async function adminConversationRoutes(app: FastifyInstance) {
           attachment_name: att?.name ?? null,
           attachment_mime: att?.mime ?? null,
           has_attachment: Boolean(att?.url),
+          attachment_url: media?.url ?? null,
+          attachment_thumbnail_url: media?.thumbnail_url ?? null,
+          attachment_size: typeof media?.size === "number" ? media.size : null,
+          attachment_width: typeof media?.width === "number" ? media.width : null,
+          attachment_height: typeof media?.height === "number" ? media.height : null,
         };
       }),
     };
