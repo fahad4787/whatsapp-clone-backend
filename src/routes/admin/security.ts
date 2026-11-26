@@ -10,7 +10,7 @@ export async function adminSecurityRoutes(app: FastifyInstance) {
     return {
       ...s,
       note: s.require_2fa
-        ? "require_2fa is stored but TOTP challenge is not enforced yet."
+        ? "TOTP is required at admin login. Unenrolled admins get an enrollment ticket."
         : undefined,
     };
   });

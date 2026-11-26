@@ -30,6 +30,19 @@ export async function adminConversationRoutes(app: FastifyInstance) {
               OR: [
                 { title: { contains: search, mode: "insensitive" } },
                 { id: { equals: search } },
+                // Direct chats have no title: match a member's phone or name instead.
+                {
+                  members: {
+                    some: {
+                      user: {
+                        OR: [
+                          { phone: { contains: search } },
+                          { displayName: { contains: search, mode: "insensitive" } },
+                        ],
+                      },
+                    },
+                  },
+                },
               ],
             }
           : {}),
