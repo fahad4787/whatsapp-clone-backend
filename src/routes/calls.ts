@@ -104,6 +104,48 @@ function notifyParticipants(
   }
 }
 
+/** Sends an event to some participants only (e.g. stop the ring for one member of a group call). */
+function notifyUsers(
+  call: NonNullable<CallRow>,
+  userIds: string[],
+  type: string,
+  extra?: Record<string, unknown>,
+) {
+  const payload = { ...toCallDto(call), ...extra };
+  for (const id of new Set(userIds)) realtimeHub.toUser(id, { type, data: payload });
+}
+
+/** Ends the call for everyone: whoever is still ringing missed it, whoever is in it has left. */
+async function endCallForAll(
+  callId: string,
+  status: "ENDED" | "MISSED" | "REJECTED",
+  endReason: string,
+) {
+  const now = new Date();
+  await prisma.callParticipant.updateMany({
+    where: { callId, status: "RINGING" },
+    data: { status: "MISSED", leftAt: now },
+  });
+  await prisma.callParticipant.updateMany({
+    where: { callId, status: "JOINED" },
+    data: { status: "LEFT", leftAt: now },
+  });
+  await prisma.call.update({
+    where: { id: callId },
+    data: { status, endReason, endedAt: now },
+  });
+  const updated = await loadCall(callId);
+  if (!updated) return null;
+  notifyParticipants(updated, "call.ended", undefined, { end_reason: endReason });
+  await postCallSystemMessage(updated);
+  callBus.changed();
+  return updated;
+}
+
+function countStatus(call: NonNullable<CallRow>, status: "RINGING" | "JOINED") {
+  return call.participants.filter((p) => p.status === status).length;
+}
+
 /** Bolta/WhatsApp-style centered call notice in the chat timeline. */
 function callNoticeText(call: NonNullable<CallRow>): string {
   const video = call.media === "VIDEO";
@@ -297,26 +339,30 @@ export async function createAndRingCall(opts: {
 
   setTimeout(() => {
     void (async () => {
-      const current = await prisma.call.findUnique({ where: { id: call.id } });
-      if (!current || current.status !== "RINGING") return;
-      const ended = await prisma.call.update({
-        where: { id: call.id },
-        data: {
-          status: "MISSED",
-          endReason: "timeout",
-          endedAt: new Date(),
-        },
-      });
+      const current = await loadCall(call.id);
+      if (!current) return;
+      if (current.status === "RINGING") {
+        await endCallForAll(call.id, "MISSED", "timeout");
+        return;
+      }
+      if (current.status !== "ACTIVE") return;
+      // Group call already running: whoever is still ringing missed it; stop their ring only.
+      const stillRinging = current.participants
+        .filter((p) => p.status === "RINGING")
+        .map((p) => p.userId);
+      if (stillRinging.length === 0) return;
       await prisma.callParticipant.updateMany({
         where: { callId: call.id, status: "RINGING" },
         data: { status: "MISSED", leftAt: new Date() },
       });
-      const dto = await loadCall(ended.id);
-      if (dto) {
-        notifyParticipants(dto, "call.ended", undefined, { end_reason: "timeout" });
-        await postCallSystemMessage(dto);
-        callBus.changed();
+      const after = await loadCall(call.id);
+      if (!after) return;
+      if (countStatus(after, "JOINED") <= 1) {
+        await endCallForAll(call.id, "ENDED", "timeout");
+        return;
       }
+      notifyUsers(after, stillRinging, "call.ended", { end_reason: "timeout" });
+      callBus.changed();
     })();
   }, RING_TTL_MS);
 
@@ -406,7 +452,12 @@ export async function callRoutes(app: FastifyInstance) {
           (call.status === "MISSED" ||
             call.status === "REJECTED" ||
             call.participants.some(
-              (p) => p.userId === userId && (p.status === "MISSED" || p.status === "REJECTED"),
+              (p) =>
+                p.userId === userId &&
+                (p.status === "MISSED" ||
+                  p.status === "REJECTED" ||
+                  // Never joined a call that is over (covers rows left "ringing" by older servers).
+                  (!p.joinedAt && call.status !== "RINGING" && call.status !== "ACTIVE")),
             ));
         const direction = outgoing ? "outgoing" : missed ? "missed" : "incoming";
         return {
@@ -450,19 +501,19 @@ export async function callRoutes(app: FastifyInstance) {
     if (!mine) return reply.code(403).send({ error: "forbidden" });
 
     if (act === "answer") {
-      if (call.status !== "RINGING") {
+      // A group call that is already running can still be joined by a member who is not in it.
+      const lateGroupJoin =
+        call.kind === "group" && call.status === "ACTIVE" && mine.status !== "JOINED";
+      if (call.status !== "RINGING" && !lateGroupJoin) {
         return reply.code(409).send({ error: "not_ringing" });
       }
-      if (call.expiresAt && call.expiresAt.getTime() < Date.now()) {
-        await prisma.call.update({
-          where: { id },
-          data: { status: "MISSED", endReason: "timeout", endedAt: new Date() },
-        });
+      if (call.status === "RINGING" && call.expiresAt && call.expiresAt.getTime() < Date.now()) {
+        await endCallForAll(id, "MISSED", "timeout");
         return reply.code(410).send({ error: "expired" });
       }
       await prisma.call.update({
         where: { id },
-        data: { status: "ACTIVE", answeredAt: new Date() },
+        data: { status: "ACTIVE", answeredAt: call.answeredAt ?? new Date() },
       });
       await prisma.callParticipant.update({
         where: { callId_userId: { callId: id, userId } },
@@ -477,6 +528,30 @@ export async function callRoutes(app: FastifyInstance) {
     }
 
     if (act === "reject") {
+      if (call.kind === "group") {
+        if (mine.status !== "RINGING" || !["RINGING", "ACTIVE"].includes(call.status)) {
+          return reply.code(409).send({ error: "not_ringing" });
+        }
+        // One member declining a group call only drops them out of it.
+        await prisma.callParticipant.update({
+          where: { callId_userId: { callId: id, userId } },
+          data: { status: "REJECTED", leftAt: new Date() },
+        });
+        const after = await loadCall(id);
+        if (!after) return reply.code(500).send({ error: "update_failed" });
+        if (countStatus(after, "RINGING") === 0 && countStatus(after, "JOINED") <= 1) {
+          const ended = await endCallForAll(
+            id,
+            call.status === "RINGING" ? "REJECTED" : "ENDED",
+            "rejected",
+          );
+          return { call: toCallDto(ended ?? after), token: null, livekit_url: null, invited: false };
+        }
+        // Stop the ring on the decliner's other devices; the call goes on for everyone else.
+        notifyUsers(after, [userId], "call.ended", { end_reason: "rejected" });
+        callBus.changed();
+        return { call: toCallDto(after), token: null, livekit_url: null, invited: false };
+      }
       if (call.status !== "RINGING") {
         return reply.code(409).send({ error: "not_ringing" });
       }
@@ -517,29 +592,27 @@ export async function callRoutes(app: FastifyInstance) {
         : "callee_hangup";
     await prisma.callParticipant.update({
       where: { callId_userId: { callId: id, userId } },
-      data: { status: "LEFT", leftAt: new Date() },
-    });
-    if (wasRinging) {
-      await prisma.callParticipant.updateMany({
-        where: { callId: id, status: "RINGING" },
-        data: { status: "MISSED", leftAt: new Date() },
-      });
-    }
-    await prisma.call.update({
-      where: { id },
       data: {
-        status: wasRinging ? "MISSED" : "ENDED",
-        endReason,
-        endedAt: new Date(),
+        status: call.kind === "group" && mine.status === "RINGING" ? "REJECTED" : "LEFT",
+        leftAt: new Date(),
       },
     });
-    const updated = await loadCall(id);
+    if (call.kind === "group") {
+      const after = await loadCall(id);
+      if (!after) return reply.code(500).send({ error: "update_failed" });
+      const joined = countStatus(after, "JOINED");
+      const ringing = countStatus(after, "RINGING");
+      // Keep a group call going while two people are in it, or one is waiting on others to answer
+      // (unless the caller cancels before anyone answered).
+      const callerCancelled = wasRinging && userId === call.initiatorId;
+      if (!callerCancelled && (joined >= 2 || (joined >= 1 && ringing >= 1))) {
+        notifyUsers(after, [userId], "call.ended", { end_reason: endReason });
+        callBus.changed();
+        return { call: toCallDto(after), token: null, livekit_url: null, invited: false };
+      }
+    }
+    const updated = await endCallForAll(id, wasRinging ? "MISSED" : "ENDED", endReason);
     if (!updated) return reply.code(500).send({ error: "update_failed" });
-    notifyParticipants(updated, "call.ended", undefined, {
-      end_reason: endReason,
-    });
-    await postCallSystemMessage(updated);
-    callBus.changed();
     return { call: toCallDto(updated), token: null, livekit_url: null, invited: false };
   });
 }

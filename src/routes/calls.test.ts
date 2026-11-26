@@ -150,6 +150,80 @@ describe("Wave 16 calls", () => {
     expect(await unreadFor(a.access)).toBe(0);
   });
 
+  it("keeps a group call going when one member declines, joins late, or leaves", async () => {
+    process.env.LIVEKIT_URL = "wss://test.livekit.cloud";
+    process.env.LIVEKIT_API_KEY = "APItestkey";
+    process.env.LIVEKIT_API_SECRET = "testsecretvaluefortoken";
+
+    const suffix = String(Date.now()).slice(-8);
+    const a = await userAccess(`915${suffix}`.slice(0, 10));
+    const b = await userAccess(`916${suffix}`.slice(0, 10));
+    const c = await userAccess(`917${suffix}`.slice(0, 10));
+    const d = await userAccess(`918${suffix}`.slice(0, 10));
+    const auth = (access: string) => ({ authorization: `Bearer ${access}` });
+
+    const group = await app.inject({
+      method: "POST",
+      url: "/api/conversations/group",
+      headers: auth(a.access),
+      payload: { title: "Group call test", member_ids: [b.userId, c.userId, d.userId] },
+    });
+    expect(group.statusCode).toBeLessThan(300);
+    const conversationId = group.json().id as string;
+
+    const act = async (id: string, action: string, access: string) => {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/calls/${id}/${action}`,
+        headers: auth(access),
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+      return res.json().call as {
+        status: string;
+        participants: { user_id: string; status: string }[];
+      };
+    };
+    const statusOf = (call: { participants: { user_id: string; status: string }[] }, id: string) =>
+      call.participants.find((p) => p.user_id === id)?.status;
+
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/calls",
+      headers: auth(a.access),
+      payload: { conversation_id: conversationId, media: "audio" },
+    });
+    expect(start.statusCode).toBe(201);
+    const id = start.json().call.id as string;
+
+    let call = await act(id, "reject", d.access); // one member declines
+    expect(call.status).toBe("ringing");
+    expect(statusOf(call, d.userId)).toBe("rejected");
+
+    call = await act(id, "answer", b.access);
+    expect(call.status).toBe("active");
+    call = await act(id, "answer", c.access); // joins after the call started
+    expect(statusOf(call, c.userId)).toBe("joined");
+
+    call = await act(id, "leave", b.access); // a and c are still in it
+    expect(call.status).toBe("active");
+    expect(statusOf(call, b.userId)).toBe("left");
+
+    call = await act(id, "leave", c.access); // a is alone now
+    expect(call.status).toBe("ended");
+    expect(statusOf(call, a.userId)).toBe("left");
+
+    const history = await app.inject({
+      method: "GET",
+      url: "/api/calls/history",
+      headers: auth(d.access),
+    });
+    const row = (history.json().items as { id: string; direction: string }[]).find(
+      (r) => r.id === id,
+    );
+    expect(row?.direction).toBe("missed");
+  });
+
   it("rejects start when LiveKit env is missing", async () => {
     const prev = {
       url: process.env.LIVEKIT_URL,
